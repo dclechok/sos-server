@@ -1,16 +1,10 @@
-// sockets/socket.js (OPEN WORLD MMO + GLOBAL CHAT) — CLICK/DRAG-TO-MOVE (NO OVERSHOOT / NO SPIN / NO FLOP)
+// sockets/socket.js (OPEN WORLD MMO + GLOBAL CHAT) — ARPG CLICK/DRAG MOVE (NO FLOAT / NO JITTER)
 //
-// Key fixes vs your version:
-// 1) Arrival is DISTANCE-ONLY: when within ARRIVE_RADIUS, we SNAP to target, ZERO velocity, CLEAR moveTarget.
-// 2) No "minimum arrive speed" creep.
-// 3) Slow zone compares speed ALONG the target direction (speedToward).
-// 4) FACE_LOCK_RADIUS prevents last-moment atan2 flips.
-//
-// ✅ UPDATE INCLUDED:
-// - world:snapshot now includes vx/vy per player (for buttery client prediction).
-// - Snapshot still includes server timestamp `t`.
-//
-// NOTE: This file assumes your existing imports/paths are correct.
+// Changes vs your current file:
+// 1) Server movement is ARPG-style: velocity points directly to target (no turn rate, no thrust/drag inertia).
+// 2) Smooth decel near target + clean stop (no overshoot).
+// 3) Snapshot includes per-player ts + facing for client smoothing/interp.
+// 4) Keeps your global chat + interest management intact.
 
 const { ObjectId } = require("mongodb");
 const { WORLD_SEED } = require("../world/worldSeed");
@@ -18,12 +12,11 @@ const { WORLD_SEED } = require("../world/worldSeed");
 const activePlayers = {}; // socket.id -> characterId
 const playerMeta = {}; // socket.id -> { characterId, name }
 
-// Authoritative ship state
-// socket.id -> { x, y, vx, vy, angle, moveTarget, lastSeenAt }
+// Authoritative state
+// socket.id -> { x, y, vx, vy, angle, facing, moveTarget, lastSeenAt }
 const shipState = {};
 
-// Last input per player
-// socket.id -> { thrust, targetAngle?, lastAt }
+// Last input per player (kept for compatibility; not used for ARPG click-move)
 const shipInput = {};
 
 // ------------------------------
@@ -51,23 +44,12 @@ module.exports = function socketHandler(io) {
   const TICK_HZ = 20; // physics tick
   const DT = 1 / TICK_HZ;
 
-  const SNAPSHOT_HZ = 20; // network snapshot rate (20Hz feels way better)
+  const SNAPSHOT_HZ = 20;
 
-  // Movement
-  const TURN_RATE = 4.5; // rad/sec
-  const THRUST = 180; // px/sec^2
-  const DRAG = 0.92; // per-tick damping
-  const MAX_SPEED = 320; // px/sec cap
-
-  // Click-to-move autopilot
-  const SLOW_RADIUS = 120;
-  const ARRIVE_RADIUS = 14;
-
-  const FACE_LOCK_RADIUS = 28;
-
-  const ARRIVE_K = 2.2;
-  const MAX_ARRIVE_SPEED = 170;
-  const ARRIVE_DRAG = 0.84;
+  // ARPG Movement
+  const MAX_SPEED = 45; // px/sec
+  const SLOW_RADIUS = 30; // slow down within this distance
+  const STOP_EPS = 0.75; // stop when within this distance
 
   // Interest management
   const VIEW_RADIUS = 2400;
@@ -75,21 +57,8 @@ module.exports = function socketHandler(io) {
 
   const INPUT_STALE_MS = 2000;
 
-  function clamp(x, a, b) {
-    return x < a ? a : x > b ? b : x;
-  }
-
-  function wrapAngle(a) {
-    while (a <= -Math.PI) a += Math.PI * 2;
-    while (a > Math.PI) a -= Math.PI * 2;
-    return a;
-  }
-
-  function turnToward(current, target, maxDelta) {
-    let d = wrapAngle(target - current);
-    if (d > maxDelta) d = maxDelta;
-    if (d < -maxDelta) d = -maxDelta;
-    return wrapAngle(current + d);
+  function clamp01(v) {
+    return v < 0 ? 0 : v > 1 ? 1 : v;
   }
 
   function safeNameFromMeta(socketId) {
@@ -100,8 +69,8 @@ module.exports = function socketHandler(io) {
     return s.slice(0, CHAT_NAME_MAX);
   }
 
-  // ✅ Snapshot builder now includes vx/vy for remote prediction
-  function buildNearbySnapshot(meId) {
+  // Snapshot builder now includes vx/vy + ts + facing (per player)
+  function buildNearbySnapshot(meId, now) {
     const me = shipState[meId];
     if (!me) return {};
 
@@ -121,7 +90,9 @@ module.exports = function socketHandler(io) {
           vx: p.vx,
           vy: p.vy,
           angle: p.angle,
+          facing: p.facing || "right",
           name,
+          ts: now,
         };
         continue;
       }
@@ -137,7 +108,9 @@ module.exports = function socketHandler(io) {
           vx: p.vx,
           vy: p.vy,
           angle: p.angle,
+          facing: p.facing || "right",
           name,
+          ts: now,
         };
       }
     }
@@ -146,27 +119,14 @@ module.exports = function socketHandler(io) {
   }
 
   // ======================================================
-  // Authoritative physics tick (fixed rate)
+  // Authoritative tick (fixed rate)
   // ======================================================
   setInterval(() => {
-    const now = Date.now();
-
     for (const [id, p] of Object.entries(shipState)) {
       if (!p) continue;
 
-      const inp = shipInput[id];
-
-      const manualThrust =
-        inp && now - (inp.lastAt || 0) <= INPUT_STALE_MS ? !!inp.thrust : false;
-
-      let desiredAngle = p.angle;
-      let thrusting = manualThrust;
-
-      if (
-        p.moveTarget &&
-        Number.isFinite(p.moveTarget.x) &&
-        Number.isFinite(p.moveTarget.y)
-      ) {
+      // ARPG click-to-move: no inertia. Always b-line to target.
+      if (p.moveTarget && Number.isFinite(p.moveTarget.x) && Number.isFinite(p.moveTarget.y)) {
         const tx = p.moveTarget.x;
         const ty = p.moveTarget.y;
 
@@ -174,67 +134,49 @@ module.exports = function socketHandler(io) {
         const dy = ty - p.y;
         const dist = Math.hypot(dx, dy);
 
-        if (dist <= ARRIVE_RADIUS) {
-          // snap+stop
+        if (dist <= STOP_EPS) {
+          // finish cleanly
           p.x = tx;
           p.y = ty;
           p.vx = 0;
           p.vy = 0;
           p.moveTarget = null;
-          thrusting = false;
-          desiredAngle = p.angle;
         } else {
-          if (dist > FACE_LOCK_RADIUS) desiredAngle = Math.atan2(dy, dx);
+          const dirx = dx / dist;
+          const diry = dy / dist;
 
-          if (dist > SLOW_RADIUS) {
-            thrusting = true;
+          // smooth decel near target (linear-to-zero within slow radius)
+          const slowFactor = clamp01(dist / SLOW_RADIUS);
+          const speed = MAX_SPEED * slowFactor;
+
+          // velocity points directly at target
+          p.vx = dirx * speed;
+          p.vy = diry * speed;
+
+          // face direction (left/right)
+          p.facing = dx < 0 ? "left" : "right";
+
+          // keep angle for any legacy client usage
+          p.angle = Math.atan2(dy, dx);
+
+          // integrate without overshoot
+          const step = speed * DT;
+          if (step >= dist) {
+            p.x = tx;
+            p.y = ty;
+            p.vx = 0;
+            p.vy = 0;
+            p.moveTarget = null;
           } else {
-            const inv = 1 / dist;
-            const dirx = dx * inv;
-            const diry = dy * inv;
-
-            const speedToward = p.vx * dirx + p.vy * diry;
-            const desiredSpeed = clamp(dist * ARRIVE_K, 0, MAX_ARRIVE_SPEED);
-
-            thrusting = speedToward < desiredSpeed;
-
-            if (speedToward > desiredSpeed) {
-              p.vx *= ARRIVE_DRAG;
-              p.vy *= ARRIVE_DRAG;
-            } else {
-              p.vx *= 0.985;
-              p.vy *= 0.985;
-            }
+            p.x += dirx * step;
+            p.y += diry * step;
           }
         }
       } else {
-        const hasFreshAngle =
-          inp &&
-          now - (inp.lastAt || 0) <= INPUT_STALE_MS &&
-          Number.isFinite(inp.targetAngle);
-
-        if (hasFreshAngle) desiredAngle = inp.targetAngle;
+        // no target => no drift
+        p.vx = 0;
+        p.vy = 0;
       }
-
-      p.angle = turnToward(p.angle, desiredAngle, TURN_RATE * DT);
-
-      if (thrusting) {
-        p.vx += Math.cos(p.angle) * THRUST * DT;
-        p.vy += Math.sin(p.angle) * THRUST * DT;
-      }
-
-      p.vx *= DRAG;
-      p.vy *= DRAG;
-
-      const sp = Math.hypot(p.vx, p.vy);
-      if (sp > MAX_SPEED) {
-        const k = MAX_SPEED / sp;
-        p.vx *= k;
-        p.vy *= k;
-      }
-
-      p.x += p.vx * DT;
-      p.y += p.vy * DT;
     }
   }, 1000 / TICK_HZ);
 
@@ -250,7 +192,7 @@ module.exports = function socketHandler(io) {
       if (!shipState[socketId]) continue;
 
       sock.emit("world:snapshot", {
-        players: buildNearbySnapshot(socketId),
+        players: buildNearbySnapshot(socketId, now),
         t: now,
       });
     }
@@ -260,8 +202,6 @@ module.exports = function socketHandler(io) {
   // Socket connections
   // ======================================================
   io.on("connection", (socket) => {
-    // console.log("Client connected:", socket.id);
-
     socket.emit("world:init", { worldSeed: WORLD_SEED });
     socket.emit("chatHistory", chatHistory);
 
@@ -284,10 +224,8 @@ module.exports = function socketHandler(io) {
       io.emit("newMessage", payload);
     });
 
-    // identify: bind characterId + spawn ship from DB
+    // identify: bind characterId + spawn from DB
     socket.on("identify", async ({ characterId } = {}) => {
-      // console.log("identify:", socket.id, "=>", characterId);
-
       if (!characterId) {
         socket.emit("sceneError", { error: "Missing characterId." });
         return;
@@ -314,8 +252,8 @@ module.exports = function socketHandler(io) {
           socket.emit("sceneError", { error: "Character not found." });
           return;
         }
-        //default starting position
 
+        // default starting position (your hard-coded test)
         const x = Number(11686);
         const y = Number(13578);
 
@@ -330,6 +268,7 @@ module.exports = function socketHandler(io) {
           vx: 0,
           vy: 0,
           angle: 0,
+          facing: "right",
           moveTarget: null,
           lastSeenAt: Date.now(),
         };
@@ -339,9 +278,10 @@ module.exports = function socketHandler(io) {
           ship: { ...shipState[socket.id], name },
         });
 
+        const now = Date.now();
         socket.emit("world:snapshot", {
-          players: buildNearbySnapshot(socket.id),
-          t: Date.now(),
+          players: buildNearbySnapshot(socket.id, now),
+          t: now,
         });
       } catch (err) {
         console.error("identify error:", err);
@@ -349,7 +289,7 @@ module.exports = function socketHandler(io) {
       }
     });
 
-    // player:moveTo
+    // player:moveTo (client can spam this while holding RMB)
     socket.on("player:moveTo", ({ x, y } = {}) => {
       if (!activePlayers[socket.id]) return;
       const p = shipState[socket.id];
@@ -363,20 +303,24 @@ module.exports = function socketHandler(io) {
       p.lastSeenAt = Date.now();
     });
 
+    // optional cancel (only use if you want a “stop” key)
     socket.on("player:moveCancel", () => {
       if (!activePlayers[socket.id]) return;
       const p = shipState[socket.id];
       if (!p) return;
 
       p.moveTarget = null;
+      p.vx = 0;
+      p.vy = 0;
       p.lastSeenAt = Date.now();
     });
 
-    // player:input
+    // legacy player:input kept (not used for ARPG move)
     socket.on("player:input", ({ thrust, targetAngle } = {}) => {
       if (!activePlayers[socket.id]) return;
       if (!shipState[socket.id]) return;
 
+      const now = Date.now();
       const ta = Number(targetAngle);
 
       shipInput[socket.id] = {
@@ -384,14 +328,13 @@ module.exports = function socketHandler(io) {
         targetAngle: Number.isFinite(ta)
           ? ta
           : shipInput[socket.id]?.targetAngle,
-        lastAt: Date.now(),
+        lastAt: now,
       };
 
-      shipState[socket.id].lastSeenAt = Date.now();
+      shipState[socket.id].lastSeenAt = now;
     });
 
     socket.on("disconnect", () => {
-      // console.log("Client disconnected:", socket.id);
       delete activePlayers[socket.id];
       delete shipState[socket.id];
       delete shipInput[socket.id];
