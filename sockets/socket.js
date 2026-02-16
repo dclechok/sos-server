@@ -260,7 +260,7 @@ module.exports = function socketHandler(io) {
   // Socket connections
   // ======================================================
   io.on("connection", (socket) => {
-    console.log("Client connected:", socket.id);
+    // console.log("Client connected:", socket.id);
 
     socket.emit("world:init", { worldSeed: WORLD_SEED });
     socket.emit("chatHistory", chatHistory);
@@ -286,7 +286,7 @@ module.exports = function socketHandler(io) {
 
     // identify: bind characterId + spawn ship from DB
     socket.on("identify", async ({ characterId } = {}) => {
-      console.log("identify:", socket.id, "=>", characterId);
+      // console.log("identify:", socket.id, "=>", characterId);
 
       if (!characterId) {
         socket.emit("sceneError", { error: "Missing characterId." });
@@ -314,9 +314,10 @@ module.exports = function socketHandler(io) {
           socket.emit("sceneError", { error: "Character not found." });
           return;
         }
+        //default starting position
 
-        const x = Number(player?.currentLoc?.x ?? 0);
-        const y = Number(player?.currentLoc?.y ?? 0);
+        const x = Number(11686);
+        const y = Number(13578);
 
         const nameRaw = String(player?.charName ?? "").trim();
         const name = nameRaw ? nameRaw.slice(0, CHAT_NAME_MAX) : null;
@@ -390,7 +391,7 @@ module.exports = function socketHandler(io) {
     });
 
     socket.on("disconnect", () => {
-      console.log("Client disconnected:", socket.id);
+      // console.log("Client disconnected:", socket.id);
       delete activePlayers[socket.id];
       delete shipState[socket.id];
       delete shipInput[socket.id];
