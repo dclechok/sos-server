@@ -13,7 +13,9 @@ async function findById(id) {
 }
 
 async function findByUsername(username) {
-  return Accounts().findOne({ username });
+  return Accounts().findOne({
+    username: { $regex: new RegExp(`^${username.trim()}$`, "i") }
+  });
 }
 
 async function createAccount(data) {

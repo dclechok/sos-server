@@ -1,18 +1,21 @@
-// sockets/socket.js (OPEN WORLD MMO + GLOBAL CHAT) — ARPG CLICK/DRAG MOVE (NO FLOAT / NO JITTER)
+// sockets/socket.js (OPEN WORLD MMO + GLOBAL CHAT) — ARPG CLICK/DRAG MOVE
 //
-// ✅ Updates in this version (only what we needed for class-based sprites):
-// - identify() now loads `class` from player_data
-// - server stores class in playerMeta
-// - snapshots include `class` per player so PlayerRenderer can resolve sprites
-// - player:self also includes class
+// ✅ Position persistence:
+// - identify() reads x/y from currentLoc in MongoDB (falls back to defaults)
+// - Physics tick auto-saves position to MongoDB every SAVE_INTERVAL_MS (5s)
+// - On disconnect, position is saved immediately
+// - class-based sprites: identify() loads `class` from player_data
 //
-// Everything else is unchanged.
+// ✅ ROLE COLORS FIX:
+// - identify() loads role from accounts collection (via player_data.email)
+// - role is stored in playerMeta
+// - snapshots include role so client can color hover name
 
 const { ObjectId } = require("mongodb");
 const { WORLD_SEED } = require("../world/worldSeed");
 
 const activePlayers = {}; // socket.id -> characterId
-const playerMeta = {}; // socket.id -> { characterId, name, classId }
+const playerMeta = {}; // socket.id -> { characterId, name, classId, role }
 
 // Authoritative state
 // socket.id -> { x, y, vx, vy, angle, facing, moveTarget, lastSeenAt }
@@ -20,6 +23,10 @@ const shipState = {};
 
 // Last input per player (kept for compatibility; not used for ARPG click-move)
 const shipInput = {};
+
+// Position save throttle
+const lastSavedAt = {}; // socket.id -> timestamp
+const SAVE_INTERVAL_MS = 5000; // save position every 5 seconds
 
 // ------------------------------
 // GLOBAL CHAT (server-wide)
@@ -39,6 +46,27 @@ const CHAT_MSG_MAX = 240;
 const CHAT_NAME_MAX = 24;
 const lastChatAt = {}; // socket.id -> timestamp
 
+// ------------------------------
+// HELPERS
+// ------------------------------
+
+// Fire-and-forget position save to MongoDB
+async function savePosition(socketId) {
+  const p = shipState[socketId];
+  const meta = playerMeta[socketId];
+  if (!p || !meta?.characterId) return;
+
+  try {
+    const db = require("../config/db").getDB();
+    await db.collection("player_data").updateOne(
+      { _id: new ObjectId(meta.characterId) },
+      { $set: { "currentLoc.x": p.x, "currentLoc.y": p.y } }
+    );
+  } catch (err) {
+    console.error("position save error:", err);
+  }
+}
+
 module.exports = function socketHandler(io) {
   // ======================================================
   // Tunables
@@ -57,8 +85,6 @@ module.exports = function socketHandler(io) {
   const VIEW_RADIUS = 2400;
   const VIEW_RADIUS_SQ = VIEW_RADIUS * VIEW_RADIUS;
 
-  const INPUT_STALE_MS = 2000;
-
   function clamp01(v) {
     return v < 0 ? 0 : v > 1 ? 1 : v;
   }
@@ -71,7 +97,7 @@ module.exports = function socketHandler(io) {
     return s.slice(0, CHAT_NAME_MAX);
   }
 
-  // Snapshot builder now includes vx/vy + ts + facing + name + class (per player)
+  // Snapshot builder — includes vx/vy, ts, facing, name, class, role per player
   function buildNearbySnapshot(meId, now) {
     const me = shipState[meId];
     if (!me) return {};
@@ -85,6 +111,7 @@ module.exports = function socketHandler(io) {
 
       const name = playerMeta[id]?.name || null;
       const classId = playerMeta[id]?.classId || null;
+      const role = playerMeta[id]?.role || "player";
 
       if (id === meId) {
         players[id] = {
@@ -95,7 +122,8 @@ module.exports = function socketHandler(io) {
           angle: p.angle,
           facing: p.facing || "right",
           name,
-          class: classId, // ✅ added
+          class: classId,
+          role, // ✅ added
           ts: now,
         };
         continue;
@@ -114,7 +142,8 @@ module.exports = function socketHandler(io) {
           angle: p.angle,
           facing: p.facing || "right",
           name,
-          class: classId, // ✅ added
+          class: classId,
+          role, // ✅ added
           ts: now,
         };
       }
@@ -124,9 +153,11 @@ module.exports = function socketHandler(io) {
   }
 
   // ======================================================
-  // Authoritative tick (fixed rate)
+  // Authoritative physics tick (fixed rate)
   // ======================================================
   setInterval(() => {
+    const now = Date.now();
+
     for (const [id, p] of Object.entries(shipState)) {
       if (!p) continue;
 
@@ -165,7 +196,7 @@ module.exports = function socketHandler(io) {
           // face direction (left/right)
           p.facing = dx < 0 ? "left" : "right";
 
-          // keep angle for any legacy client usage
+          // keep angle for legacy client usage
           p.angle = Math.atan2(dy, dx);
 
           // integrate without overshoot
@@ -185,6 +216,13 @@ module.exports = function socketHandler(io) {
         // no target => no drift
         p.vx = 0;
         p.vy = 0;
+      }
+
+      // ✅ Throttled position save — fires every SAVE_INTERVAL_MS
+      const lastSave = lastSavedAt[id] || 0;
+      if (now - lastSave >= SAVE_INTERVAL_MS) {
+        lastSavedAt[id] = now;
+        savePosition(id);
       }
     }
   }, 1000 / TICK_HZ);
@@ -216,6 +254,9 @@ module.exports = function socketHandler(io) {
 
     shipInput[socket.id] = { thrust: false, targetAngle: 0, lastAt: Date.now() };
 
+    // --------------------------------------------------
+    // CHAT
+    // --------------------------------------------------
     socket.on("sendMessage", ({ message } = {}) => {
       const now = Date.now();
 
@@ -233,7 +274,11 @@ module.exports = function socketHandler(io) {
       io.emit("newMessage", payload);
     });
 
-    // identify: bind characterId + spawn from DB
+    // --------------------------------------------------
+    // IDENTIFY — bind characterId + spawn from DB
+    // ✅ Restores last saved position from currentLoc
+    // ✅ Loads account role from accounts collection
+    // --------------------------------------------------
     socket.on("identify", async ({ characterId } = {}) => {
       if (!characterId) {
         socket.emit("sceneError", { error: "Missing characterId." });
@@ -252,9 +297,11 @@ module.exports = function socketHandler(io) {
 
       try {
         const db = require("../config/db").getDB();
+
+        // IMPORTANT: include email so we can look up role from accounts
         const player = await db.collection("player_data").findOne(
           { _id: oid },
-          { projection: { currentLoc: 1, charName: 1, class: 1 } } // ✅ class added
+          { projection: { currentLoc: 1, charName: 1, class: 1, email: 1 } }
         );
 
         if (!player) {
@@ -262,17 +309,34 @@ module.exports = function socketHandler(io) {
           return;
         }
 
-        // default starting position (your hard-coded test)
-        const x = Number(11686);
-        const y = Number(13578);
+        // ✅ Restore last saved position, fall back to default spawn
+        const DEFAULT_X = 11686;
+        const DEFAULT_Y = 13578;
+        const x = Number(player?.currentLoc?.x ?? DEFAULT_X);
+        const y = Number(player?.currentLoc?.y ?? DEFAULT_Y);
 
         const nameRaw = String(player?.charName ?? "").trim();
         const name = nameRaw ? nameRaw.slice(0, CHAT_NAME_MAX) : null;
 
-        // ✅ capture class for snapshots + renderer sprite resolution
         const classId = String(player?.class ?? "").trim() || null;
 
-        playerMeta[socket.id] = { characterId: String(characterId), name, classId };
+        // ✅ ROLE LOOKUP
+        let role = "player";
+        const email = String(player?.email ?? "").trim().toLowerCase();
+        if (email) {
+          const account = await db.collection("accounts").findOne(
+            { email },
+            { projection: { role: 1 } }
+          );
+          if (account?.role) role = String(account.role).trim().toLowerCase();
+        }
+
+        playerMeta[socket.id] = {
+          characterId: String(characterId),
+          name,
+          classId,
+          role, // ✅ stored
+        };
 
         shipState[socket.id] = {
           x,
@@ -285,10 +349,12 @@ module.exports = function socketHandler(io) {
           lastSeenAt: Date.now(),
         };
 
-        // ✅ include class on self payload too (useful for immediate local render/debug)
+        // Seed the save timer so we don't immediately save on join
+        lastSavedAt[socket.id] = Date.now();
+
         socket.emit("player:self", {
           id: socket.id,
-          ship: { ...shipState[socket.id], name, class: classId },
+          ship: { ...shipState[socket.id], name, class: classId, role }, // ✅ include
         });
 
         const now = Date.now();
@@ -302,7 +368,9 @@ module.exports = function socketHandler(io) {
       }
     });
 
-    // player:moveTo (client can spam this while holding RMB)
+    // --------------------------------------------------
+    // MOVE TO (client can spam this while holding RMB)
+    // --------------------------------------------------
     socket.on("player:moveTo", ({ x, y } = {}) => {
       if (!activePlayers[socket.id]) return;
       const p = shipState[socket.id];
@@ -316,7 +384,9 @@ module.exports = function socketHandler(io) {
       p.lastSeenAt = Date.now();
     });
 
-    // optional cancel (only use if you want a “stop” key)
+    // --------------------------------------------------
+    // MOVE CANCEL (optional "stop" key)
+    // --------------------------------------------------
     socket.on("player:moveCancel", () => {
       if (!activePlayers[socket.id]) return;
       const p = shipState[socket.id];
@@ -328,7 +398,9 @@ module.exports = function socketHandler(io) {
       p.lastSeenAt = Date.now();
     });
 
-    // legacy player:input kept (not used for ARPG move)
+    // --------------------------------------------------
+    // LEGACY INPUT (not used for ARPG move, kept for compat)
+    // --------------------------------------------------
     socket.on("player:input", ({ thrust, targetAngle } = {}) => {
       if (!activePlayers[socket.id]) return;
       if (!shipState[socket.id]) return;
@@ -347,12 +419,19 @@ module.exports = function socketHandler(io) {
       shipState[socket.id].lastSeenAt = now;
     });
 
+    // --------------------------------------------------
+    // DISCONNECT — save position immediately
+    // --------------------------------------------------
     socket.on("disconnect", () => {
+      // ✅ Final position save on disconnect so no progress is lost
+      savePosition(socket.id);
+
       delete activePlayers[socket.id];
       delete shipState[socket.id];
       delete shipInput[socket.id];
       delete playerMeta[socket.id];
       delete lastChatAt[socket.id];
+      delete lastSavedAt[socket.id];
     });
   });
 };
