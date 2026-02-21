@@ -1,16 +1,18 @@
 // sockets/socket.js (OPEN WORLD MMO + GLOBAL CHAT) — ARPG CLICK/DRAG MOVE (NO FLOAT / NO JITTER)
 //
-// Changes vs your current file:
-// 1) Server movement is ARPG-style: velocity points directly to target (no turn rate, no thrust/drag inertia).
-// 2) Smooth decel near target + clean stop (no overshoot).
-// 3) Snapshot includes per-player ts + facing for client smoothing/interp.
-// 4) Keeps your global chat + interest management intact.
+// ✅ Updates in this version (only what we needed for class-based sprites):
+// - identify() now loads `class` from player_data
+// - server stores class in playerMeta
+// - snapshots include `class` per player so PlayerRenderer can resolve sprites
+// - player:self also includes class
+//
+// Everything else is unchanged.
 
 const { ObjectId } = require("mongodb");
 const { WORLD_SEED } = require("../world/worldSeed");
 
 const activePlayers = {}; // socket.id -> characterId
-const playerMeta = {}; // socket.id -> { characterId, name }
+const playerMeta = {}; // socket.id -> { characterId, name, classId }
 
 // Authoritative state
 // socket.id -> { x, y, vx, vy, angle, facing, moveTarget, lastSeenAt }
@@ -69,7 +71,7 @@ module.exports = function socketHandler(io) {
     return s.slice(0, CHAT_NAME_MAX);
   }
 
-  // Snapshot builder now includes vx/vy + ts + facing (per player)
+  // Snapshot builder now includes vx/vy + ts + facing + name + class (per player)
   function buildNearbySnapshot(meId, now) {
     const me = shipState[meId];
     if (!me) return {};
@@ -82,6 +84,7 @@ module.exports = function socketHandler(io) {
       if (!p) continue;
 
       const name = playerMeta[id]?.name || null;
+      const classId = playerMeta[id]?.classId || null;
 
       if (id === meId) {
         players[id] = {
@@ -92,6 +95,7 @@ module.exports = function socketHandler(io) {
           angle: p.angle,
           facing: p.facing || "right",
           name,
+          class: classId, // ✅ added
           ts: now,
         };
         continue;
@@ -110,6 +114,7 @@ module.exports = function socketHandler(io) {
           angle: p.angle,
           facing: p.facing || "right",
           name,
+          class: classId, // ✅ added
           ts: now,
         };
       }
@@ -126,7 +131,11 @@ module.exports = function socketHandler(io) {
       if (!p) continue;
 
       // ARPG click-to-move: no inertia. Always b-line to target.
-      if (p.moveTarget && Number.isFinite(p.moveTarget.x) && Number.isFinite(p.moveTarget.y)) {
+      if (
+        p.moveTarget &&
+        Number.isFinite(p.moveTarget.x) &&
+        Number.isFinite(p.moveTarget.y)
+      ) {
         const tx = p.moveTarget.x;
         const ty = p.moveTarget.y;
 
@@ -245,7 +254,7 @@ module.exports = function socketHandler(io) {
         const db = require("../config/db").getDB();
         const player = await db.collection("player_data").findOne(
           { _id: oid },
-          { projection: { currentLoc: 1, charName: 1 } }
+          { projection: { currentLoc: 1, charName: 1, class: 1 } } // ✅ class added
         );
 
         if (!player) {
@@ -260,7 +269,10 @@ module.exports = function socketHandler(io) {
         const nameRaw = String(player?.charName ?? "").trim();
         const name = nameRaw ? nameRaw.slice(0, CHAT_NAME_MAX) : null;
 
-        playerMeta[socket.id] = { characterId: String(characterId), name };
+        // ✅ capture class for snapshots + renderer sprite resolution
+        const classId = String(player?.class ?? "").trim() || null;
+
+        playerMeta[socket.id] = { characterId: String(characterId), name, classId };
 
         shipState[socket.id] = {
           x,
@@ -273,9 +285,10 @@ module.exports = function socketHandler(io) {
           lastSeenAt: Date.now(),
         };
 
+        // ✅ include class on self payload too (useful for immediate local render/debug)
         socket.emit("player:self", {
           id: socket.id,
-          ship: { ...shipState[socket.id], name },
+          ship: { ...shipState[socket.id], name, class: classId },
         });
 
         const now = Date.now();
