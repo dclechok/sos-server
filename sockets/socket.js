@@ -6,9 +6,17 @@
 // - On disconnect, position is saved immediately
 // - class-based sprites: identify() loads `class` from player_data
 //
+// ✅ Terrain collision:
+// - player:moveTo accepts ANY target including water — player walks toward it
+// - isPassable uses a fixed SHORE_INSET to allow standing on visual shore tiles
+// - No directional margin — works correctly in all directions including walking back
+// - Axis-separated sliding so player glides along shoreline
+//
 
 const { ObjectId } = require("mongodb");
 const { WORLD_SEED } = require("../world/worldSeed");
+const { getTileId } = require("../world/worldTiles");
+const { TILE, TERRAIN_ID } = require("../world/worldConstants");
 
 const activePlayers = {}; // socket.id -> characterId
 const playerMeta = {}; // socket.id -> { characterId, name, classId }
@@ -22,7 +30,7 @@ const shipInput = {};
 
 // Position save throttle
 const lastSavedAt = {}; // socket.id -> timestamp
-const SAVE_INTERVAL_MS = 5000; // save position every 5 seconds
+const SAVE_INTERVAL_MS = 5000;
 
 // ------------------------------
 // GLOBAL CHAT (server-wide)
@@ -40,13 +48,64 @@ function pushChat(msg) {
 const CHAT_MIN_INTERVAL_MS = 800;
 const CHAT_MSG_MAX = 240;
 const CHAT_NAME_MAX = 24;
-const lastChatAt = {}; // socket.id -> timestamp
+const lastChatAt = {};
+
+// ------------------------------
+// TERRAIN COLLISION
+// ------------------------------
+
+// TERRAIN_ID values from server/world/worldConstants.js:
+//   GRASS: 0, DEEP_OCEAN: 1, UNKNOWN: 255
+const BLOCKS_MOVEMENT = new Set([TERRAIN_ID.DEEP_OCEAN, TERRAIN_ID.UNKNOWN]);
+
+// How many world units into a blocked tile the player is allowed to stand.
+// TILE * 1 = player center can be up to 1 full tile into an ocean tile.
+// This lets them visually stand on the brown shore edge.
+// Tune this value: 0 = hard edge, TILE = one tile in, TILE*2 = two tiles in.
+const SHORE_INSET = TILE * 0.5;
+
+/**
+ * Check if the player is allowed to stand at (worldX, worldY).
+ * We check SHORE_INSET world units further in all four cardinal directions.
+ * If ALL four probes are blocked, the player can't be there.
+ * If ANY probe is passable, it means we're still near land — allow it.
+ *
+ * Actually simpler: just check the raw position but allow up to SHORE_INSET
+ * into blocked tiles by shrinking the world coord toward the nearest tile center.
+ */
+function isPassable(worldX, worldY) {
+  const tileX = Math.floor(worldX / TILE);
+  const tileY = Math.floor(worldY / TILE);
+  const id = getTileId(tileX, tileY);
+  return !BLOCKS_MOVEMENT.has(id);
+}
+
+/**
+ * Returns true if the player CAN stand at (worldX, worldY).
+ * Allows up to SHORE_INSET units into a blocked tile by checking
+ * a point pulled back SHORE_INSET units toward the last passable position.
+ *
+ * Simple version: check (worldX, worldY) directly — if blocked,
+ * check whether backing off by SHORE_INSET in X and Y independently
+ * would be passable. If so, they're within the inset zone — allow it.
+ */
+function canStandAt(worldX, worldY) {
+  if (isPassable(worldX, worldY)) return true;
+
+  // We're on a blocked tile. Are we within SHORE_INSET of a passable tile?
+  // Check the four cardinal pull-back points.
+  const insetN = isPassable(worldX,              worldY + SHORE_INSET);
+  const insetS = isPassable(worldX,              worldY - SHORE_INSET);
+  const insetE = isPassable(worldX - SHORE_INSET, worldY             );
+  const insetW = isPassable(worldX + SHORE_INSET, worldY             );
+
+  return insetN || insetS || insetE || insetW;
+}
 
 // ------------------------------
 // HELPERS
 // ------------------------------
 
-// Fire-and-forget position save to MongoDB
 async function savePosition(socketId) {
   const p = shipState[socketId];
   const meta = playerMeta[socketId];
@@ -67,18 +126,16 @@ module.exports = function socketHandler(io) {
   // ======================================================
   // Tunables
   // ======================================================
-  const TICK_HZ = 20; // physics tick
+  const TICK_HZ = 20;
   const DT = 1 / TICK_HZ;
 
   const SNAPSHOT_HZ = 20;
 
-  // ARPG Movement
-  const MAX_SPEED = 45; // px/sec
-  const SLOW_RADIUS = 30; // slow down within this distance
-  const STOP_EPS = 0.75; // stop when within this distance
+  const MAX_SPEED   = 45;
+  const SLOW_RADIUS = 30;
+  const STOP_EPS    = 0.75;
 
-  // Interest management
-  const VIEW_RADIUS = 2400;
+  const VIEW_RADIUS    = 2400;
   const VIEW_RADIUS_SQ = VIEW_RADIUS * VIEW_RADIUS;
 
   function clamp01(v) {
@@ -93,7 +150,6 @@ module.exports = function socketHandler(io) {
     return s.slice(0, CHAT_NAME_MAX);
   }
 
-  // Snapshot builder — includes vx/vy, ts, facing, name, class per player
   function buildNearbySnapshot(meId, now) {
     const me = shipState[meId];
     if (!me) return {};
@@ -105,39 +161,25 @@ module.exports = function socketHandler(io) {
     for (const [id, p] of Object.entries(shipState)) {
       if (!p) continue;
 
-      const name = playerMeta[id]?.name || null;
+      const name    = playerMeta[id]?.name    || null;
       const classId = playerMeta[id]?.classId || null;
 
       if (id === meId) {
         players[id] = {
-          x: p.x,
-          y: p.y,
-          vx: p.vx,
-          vy: p.vy,
-          angle: p.angle,
-          facing: p.facing || "right",
-          name,
-          class: classId,
-          ts: now,
+          x: p.x, y: p.y, vx: p.vx, vy: p.vy,
+          angle: p.angle, facing: p.facing || "right",
+          name, class: classId, ts: now,
         };
         continue;
       }
 
       const dx = p.x - mx;
       const dy = p.y - my;
-      const d2 = dx * dx + dy * dy;
-
-      if (d2 <= VIEW_RADIUS_SQ) {
+      if (dx * dx + dy * dy <= VIEW_RADIUS_SQ) {
         players[id] = {
-          x: p.x,
-          y: p.y,
-          vx: p.vx,
-          vy: p.vy,
-          angle: p.angle,
-          facing: p.facing || "right",
-          name,
-          class: classId,
-          ts: now,
+          x: p.x, y: p.y, vx: p.vx, vy: p.vy,
+          angle: p.angle, facing: p.facing || "right",
+          name, class: classId, ts: now,
         };
       }
     }
@@ -146,7 +188,7 @@ module.exports = function socketHandler(io) {
   }
 
   // ======================================================
-  // Authoritative physics tick (fixed rate)
+  // Authoritative physics tick
   // ======================================================
   setInterval(() => {
     const now = Date.now();
@@ -154,7 +196,6 @@ module.exports = function socketHandler(io) {
     for (const [id, p] of Object.entries(shipState)) {
       if (!p) continue;
 
-      // ARPG click-to-move: no inertia. Always b-line to target.
       if (
         p.moveTarget &&
         Number.isFinite(p.moveTarget.x) &&
@@ -163,55 +204,63 @@ module.exports = function socketHandler(io) {
         const tx = p.moveTarget.x;
         const ty = p.moveTarget.y;
 
-        const dx = tx - p.x;
-        const dy = ty - p.y;
+        const dx   = tx - p.x;
+        const dy   = ty - p.y;
         const dist = Math.hypot(dx, dy);
 
+        const dirx = dist > 0 ? dx / dist : 0;
+        const diry = dist > 0 ? dy / dist : 0;
+
         if (dist <= STOP_EPS) {
-          // finish cleanly
-          p.x = tx;
-          p.y = ty;
-          p.vx = 0;
-          p.vy = 0;
+          if (canStandAt(tx, ty)) {
+            p.x = tx; p.y = ty;
+          }
+          p.vx = 0; p.vy = 0;
           p.moveTarget = null;
         } else {
-          const dirx = dx / dist;
-          const diry = dy / dist;
-
-          // smooth decel near target (linear-to-zero within slow radius)
           const slowFactor = clamp01(dist / SLOW_RADIUS);
-          const speed = MAX_SPEED * slowFactor;
+          const speed      = MAX_SPEED * slowFactor;
 
-          // velocity points directly at target
-          p.vx = dirx * speed;
-          p.vy = diry * speed;
-
-          // face direction (left/right)
+          p.vx     = dirx * speed;
+          p.vy     = diry * speed;
           p.facing = dx < 0 ? "left" : "right";
+          p.angle  = Math.atan2(dy, dx);
 
-          // keep angle for legacy client usage
-          p.angle = Math.atan2(dy, dx);
-
-          // integrate without overshoot
           const step = speed * DT;
+
           if (step >= dist) {
-            p.x = tx;
-            p.y = ty;
-            p.vx = 0;
-            p.vy = 0;
+            if (canStandAt(tx, ty)) {
+              p.x = tx; p.y = ty;
+            }
+            p.vx = 0; p.vy = 0;
             p.moveTarget = null;
           } else {
-            p.x += dirx * step;
-            p.y += diry * step;
+            const newX = p.x + dirx * step;
+            const newY = p.y + diry * step;
+
+            if (canStandAt(newX, newY)) {
+              // ✅ Free move
+              p.x = newX;
+              p.y = newY;
+            } else if (canStandAt(newX, p.y)) {
+              // ✅ Slide along X
+              p.x = newX;
+            } else if (canStandAt(p.x, newY)) {
+              // ✅ Slide along Y
+              p.y = newY;
+            } else {
+              // ✅ Fully blocked
+              p.vx = 0; p.vy = 0;
+              p.moveTarget = null;
+            }
           }
         }
       } else {
-        // no target => no drift
         p.vx = 0;
         p.vy = 0;
       }
 
-      // ✅ Throttled position save — fires every SAVE_INTERVAL_MS
+      // Throttled position save
       const lastSave = lastSavedAt[id] || 0;
       if (now - lastSave >= SAVE_INTERVAL_MS) {
         lastSavedAt[id] = now;
@@ -221,15 +270,14 @@ module.exports = function socketHandler(io) {
   }, 1000 / TICK_HZ);
 
   // ======================================================
-  // Snapshot tick (per-socket, interest-managed)
+  // Snapshot tick
   // ======================================================
   setInterval(() => {
     const now = Date.now();
 
     for (const [socketId] of Object.entries(activePlayers)) {
       const sock = io.sockets.sockets.get(socketId);
-      if (!sock) continue;
-      if (!shipState[socketId]) continue;
+      if (!sock || !shipState[socketId]) continue;
 
       sock.emit("world:snapshot", {
         players: buildNearbySnapshot(socketId, now),
@@ -251,8 +299,7 @@ module.exports = function socketHandler(io) {
     // CHAT
     // --------------------------------------------------
     socket.on("sendMessage", ({ message } = {}) => {
-      const now = Date.now();
-
+      const now  = Date.now();
       const prev = lastChatAt[socket.id] || 0;
       if (now - prev < CHAT_MIN_INTERVAL_MS) return;
       lastChatAt[socket.id] = now;
@@ -261,15 +308,14 @@ module.exports = function socketHandler(io) {
       if (!cleanMsg) return;
 
       const serverName = safeNameFromMeta(socket.id) || "Unknown";
-      const payload = { user: serverName, message: cleanMsg, at: now };
+      const payload    = { user: serverName, message: cleanMsg, at: now };
 
       pushChat(payload);
       io.emit("newMessage", payload);
     });
 
     // --------------------------------------------------
-    // IDENTIFY — bind characterId + spawn from DB
-    // ✅ Restores last saved position from currentLoc
+    // IDENTIFY
     // --------------------------------------------------
     socket.on("identify", async ({ characterId } = {}) => {
       if (!characterId) {
@@ -299,31 +345,23 @@ module.exports = function socketHandler(io) {
           return;
         }
 
-        // ✅ Restore last saved position, fall back to default spawn
         const DEFAULT_X = 11686;
         const DEFAULT_Y = 13578;
         const x = Number(player?.currentLoc?.x ?? DEFAULT_X);
         const y = Number(player?.currentLoc?.y ?? DEFAULT_Y);
 
         const nameRaw = String(player?.charName ?? "").trim();
-        const name = nameRaw ? nameRaw.slice(0, CHAT_NAME_MAX) : null;
-
+        const name    = nameRaw ? nameRaw.slice(0, CHAT_NAME_MAX) : null;
         const classId = String(player?.class ?? "").trim() || null;
 
         playerMeta[socket.id] = { characterId: String(characterId), name, classId };
 
         shipState[socket.id] = {
-          x,
-          y,
-          vx: 0,
-          vy: 0,
-          angle: 0,
-          facing: "right",
-          moveTarget: null,
+          x, y, vx: 0, vy: 0, angle: 0,
+          facing: "right", moveTarget: null,
           lastSeenAt: Date.now(),
         };
 
-        // Seed the save timer so we don't immediately save on join
         lastSavedAt[socket.id] = Date.now();
 
         socket.emit("player:self", {
@@ -343,7 +381,8 @@ module.exports = function socketHandler(io) {
     });
 
     // --------------------------------------------------
-    // MOVE TO (client can spam this while holding RMB)
+    // MOVE TO
+    // ✅ Accepts any target — physics tick handles shore collision
     // --------------------------------------------------
     socket.on("player:moveTo", ({ x, y } = {}) => {
       if (!activePlayers[socket.id]) return;
@@ -354,12 +393,12 @@ module.exports = function socketHandler(io) {
       const ty = Number(y);
       if (!Number.isFinite(tx) || !Number.isFinite(ty)) return;
 
-      p.moveTarget = { x: tx, y: ty };
-      p.lastSeenAt = Date.now();
+      p.moveTarget  = { x: tx, y: ty };
+      p.lastSeenAt  = Date.now();
     });
 
     // --------------------------------------------------
-    // MOVE CANCEL (optional "stop" key)
+    // MOVE CANCEL
     // --------------------------------------------------
     socket.on("player:moveCancel", () => {
       if (!activePlayers[socket.id]) return;
@@ -373,20 +412,18 @@ module.exports = function socketHandler(io) {
     });
 
     // --------------------------------------------------
-    // LEGACY INPUT (not used for ARPG move, kept for compat)
+    // LEGACY INPUT
     // --------------------------------------------------
     socket.on("player:input", ({ thrust, targetAngle } = {}) => {
       if (!activePlayers[socket.id]) return;
       if (!shipState[socket.id]) return;
 
       const now = Date.now();
-      const ta = Number(targetAngle);
+      const ta  = Number(targetAngle);
 
       shipInput[socket.id] = {
         thrust: !!thrust,
-        targetAngle: Number.isFinite(ta)
-          ? ta
-          : shipInput[socket.id]?.targetAngle,
+        targetAngle: Number.isFinite(ta) ? ta : shipInput[socket.id]?.targetAngle,
         lastAt: now,
       };
 
@@ -394,10 +431,9 @@ module.exports = function socketHandler(io) {
     });
 
     // --------------------------------------------------
-    // DISCONNECT — save position immediately
+    // DISCONNECT
     // --------------------------------------------------
     socket.on("disconnect", () => {
-      // ✅ Final position save on disconnect so no progress is lost
       savePosition(socket.id);
 
       delete activePlayers[socket.id];

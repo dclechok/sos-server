@@ -5,8 +5,8 @@ const path = require("path");
 const { TERRAIN_ID } = require("./worldConstants");
 
 // Adjust these paths if your server serves /public/world
-const META_PATH = path.join(__dirname, "..", "public", "world", "meta.json");
-const CHUNKS_DIR = path.join(__dirname, "..", "public", "world", "chunks");
+const META_PATH = path.join(__dirname, "meta.json");
+const CHUNKS_DIR = path.join(__dirname, "chunks");
 
 // cache: "cx,cy" -> Uint8Array
 const cache = new Map();
