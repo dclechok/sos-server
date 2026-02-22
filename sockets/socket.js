@@ -6,17 +6,12 @@
 // - On disconnect, position is saved immediately
 // - class-based sprites: identify() loads `class` from player_data
 //
-// ✅ ROLE COLORS FIX:
-// - identify() loads role from accounts collection (via player_data.email)
-// - role is stored in playerMeta
-// - snapshots include role so client can color hover name
 
 const { ObjectId } = require("mongodb");
 const { WORLD_SEED } = require("../world/worldSeed");
-const { getTileId } = require("../world/worldTiles");
 
 const activePlayers = {}; // socket.id -> characterId
-const playerMeta = {}; // socket.id -> { characterId, name, classId, role }
+const playerMeta = {}; // socket.id -> { characterId, name, classId }
 
 // Authoritative state
 // socket.id -> { x, y, vx, vy, angle, facing, moveTarget, lastSeenAt }
@@ -98,7 +93,7 @@ module.exports = function socketHandler(io) {
     return s.slice(0, CHAT_NAME_MAX);
   }
 
-  // Snapshot builder — includes vx/vy, ts, facing, name, class, role per player
+  // Snapshot builder — includes vx/vy, ts, facing, name, class per player
   function buildNearbySnapshot(meId, now) {
     const me = shipState[meId];
     if (!me) return {};
@@ -112,7 +107,6 @@ module.exports = function socketHandler(io) {
 
       const name = playerMeta[id]?.name || null;
       const classId = playerMeta[id]?.classId || null;
-      const role = playerMeta[id]?.role || "player";
 
       if (id === meId) {
         players[id] = {
@@ -124,7 +118,6 @@ module.exports = function socketHandler(io) {
           facing: p.facing || "right",
           name,
           class: classId,
-          role, // ✅ added
           ts: now,
         };
         continue;
@@ -144,7 +137,6 @@ module.exports = function socketHandler(io) {
           facing: p.facing || "right",
           name,
           class: classId,
-          role, // ✅ added
           ts: now,
         };
       }
@@ -278,7 +270,6 @@ module.exports = function socketHandler(io) {
     // --------------------------------------------------
     // IDENTIFY — bind characterId + spawn from DB
     // ✅ Restores last saved position from currentLoc
-    // ✅ Loads account role from accounts collection
     // --------------------------------------------------
     socket.on("identify", async ({ characterId } = {}) => {
       if (!characterId) {
@@ -298,11 +289,9 @@ module.exports = function socketHandler(io) {
 
       try {
         const db = require("../config/db").getDB();
-
-        // IMPORTANT: include email so we can look up role from accounts
         const player = await db.collection("player_data").findOne(
           { _id: oid },
-          { projection: { currentLoc: 1, charName: 1, class: 1, email: 1 } }
+          { projection: { currentLoc: 1, charName: 1, class: 1 } }
         );
 
         if (!player) {
@@ -321,23 +310,7 @@ module.exports = function socketHandler(io) {
 
         const classId = String(player?.class ?? "").trim() || null;
 
-        // ✅ ROLE LOOKUP
-        let role = "player";
-        const email = String(player?.email ?? "").trim().toLowerCase();
-        if (email) {
-          const account = await db.collection("accounts").findOne(
-            { email },
-            { projection: { role: 1 } }
-          );
-          if (account?.role) role = String(account.role).trim().toLowerCase();
-        }
-
-        playerMeta[socket.id] = {
-          characterId: String(characterId),
-          name,
-          classId,
-          role, // ✅ stored
-        };
+        playerMeta[socket.id] = { characterId: String(characterId), name, classId };
 
         shipState[socket.id] = {
           x,
@@ -355,7 +328,7 @@ module.exports = function socketHandler(io) {
 
         socket.emit("player:self", {
           id: socket.id,
-          ship: { ...shipState[socket.id], name, class: classId, role }, // ✅ include
+          ship: { ...shipState[socket.id], name, class: classId },
         });
 
         const now = Date.now();
