@@ -1,6 +1,12 @@
 // controllers/characterController.js
 const { ObjectId } = require("mongodb");
 
+
+// STARTING LOCATION !!!
+const DEFAULT_X = 11686;
+const DEFAULT_Y = 13578;
+
+
 function safeName(raw) {
   return String(raw || "")
     .replace(/[^a-zA-Z0-9 _'-]/g, "")
@@ -13,7 +19,7 @@ function makeNewCharacterDoc({ email, charName, classId }) {
   return {
     email: email || null,
     dateCreated: new Date(),
-    currentLoc: { x: 0, y: 0 },
+    currentLoc: { x: DEFAULT_X, y: DEFAULT_Y },
     visitedLocs: [],
     currency: "1",
     inventory: [],

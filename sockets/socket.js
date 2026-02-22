@@ -13,6 +13,7 @@
 
 const { ObjectId } = require("mongodb");
 const { WORLD_SEED } = require("../world/worldSeed");
+const { getTileId } = require("../world/worldTiles");
 
 const activePlayers = {}; // socket.id -> characterId
 const playerMeta = {}; // socket.id -> { characterId, name, classId, role }

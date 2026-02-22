@@ -6,7 +6,7 @@ const { Server } = require("socket.io");
 const { connectDB } = require("./config/db");
 const routes = require("./routes");
 const socketHandler = require("./sockets/socket");
-
+const path = require("path");
 const { startWorldTick } = require("./world/worldTick");
 
 const app = express();
@@ -23,6 +23,11 @@ io.engine.on("connection_error", (err) => {
 
 app.use(cors());
 app.use(express.json());
+
+app.use(
+  "/world",
+  express.static(path.join(__dirname, "world"))
+);
 
 async function startServer() {
   const db = await connectDB();

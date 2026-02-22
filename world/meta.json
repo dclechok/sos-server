@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "source": "map.png",
+  "width_tiles": 2048,
+  "height_tiles": 2048,
+  "chunk_size": 64,
+  "chunks_x": 32,
+  "chunks_y": 32,
+  "terrain_ids": {
+    "GRASS": 0,
+    "DEEP_OCEAN": 1,
+    "UNKNOWN": 255
+  },
+  "palette_hex_to_terrain": {
+    "176414": "GRASS",
+    "0e3a59": "DEEP_OCEAN",
+    "154a25": "GRASS (auto-mapped)",
+    "134f37": "DEEP_OCEAN (auto-mapped)",
+    "104548": "DEEP_OCEAN (auto-mapped)"
+  },
+  "notes": [
+    "Each .bin chunk is CHUNK*CHUNK bytes, row-major (y then x).",
+    "Tile id meanings are in terrain_ids."
+  ]
+}
