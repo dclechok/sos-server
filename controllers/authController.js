@@ -24,18 +24,29 @@ exports.register = async (req, res) => {
       email,
       passwordHash,
       createdAt: new Date(),
+
+      // ✅ defaults so fields are never missing
+      role: "player",
+      characters: [],
     });
 
-    res.json({
-      user: { id: result.insertedId.toString(), username, email },
+    return res.json({
+      user: {
+        id: result.insertedId.toString(),
+        username,
+        email,
+        role: "player",
+        characters: [],
+      },
+
+      // keeping your existing call signature untouched
       token: generateToken(result.insertedId, username, email),
     });
   } catch (err) {
     console.error("Register error:", err);
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Server error" });
   }
 };
-
 
 // ===========================
 // LOGIN
@@ -65,17 +76,19 @@ exports.login = async (req, res) => {
       user: {
         id: user._id.toString(),
         username: user.username,
-        characters: user.characters || []
+
+        // ✅ include role
+        role: user.role || "player",
+
+        characters: user.characters || [],
       },
       token,
     });
-
   } catch (err) {
     console.error("Login error:", err);
     return res.status(500).json({ message: "Server error" });
   }
 };
-
 
 // ===========================
 // ME (VERIFY TOKEN)
@@ -93,17 +106,17 @@ exports.me = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-  res.json({
-    user: {
-    id: user._id.toString(),
-    username: user.username,
-    email: user.email,
-    characters: user.characters || []
-    },
-  });
-
+    return res.json({
+      user: {
+        id: user._id.toString(),
+        username: user.username,
+        email: user.email,
+        role: user.role || "player",
+        characters: user.characters || [],
+      },
+    });
   } catch (err) {
     console.error("Me error:", err);
-    res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Server error" });
   }
 };
