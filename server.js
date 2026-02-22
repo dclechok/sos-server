@@ -27,7 +27,7 @@ const httpServer = createServer(app);
 const allowedOrigins = [
   "http://localhost:3000",
   "http://127.0.0.1:3000",
-  "https://sos-client-tautu.vercel.app",
+  "https://sos-client-tau.vercel.app",
   "https://lornonline.com",
   "https://www.lornonline.com",
   // Add your production client origin(s) here:
