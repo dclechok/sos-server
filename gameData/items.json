@@ -1,0 +1,18 @@
+{
+  "iron_sword": {
+    "name": "Iron Sword",
+    "type": "weapon",
+    "slot": "mainhand",
+    "stackMax": 1,
+    "icon": "/art/items/iron_sword.png",
+    "stats": { "atk": 3 }
+  },
+
+  "health_potion": {
+    "name": "Health Potion",
+    "type": "consumable",
+    "stackMax": 10,
+    "icon": "/art/items/health_potion.png",
+    "useEffect": "heal_small"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "campfire": {
+    "name": "Campfire",
+    "sizePx": 16,
+    "frames": [
+      "/art/objects/campfire1.png",
+      "/art/objects/campfire2.png",
+      "/art/objects/campfire3.png",
+      "/art/objects/campfire4.png"
+    ],
+    "fps": 8,
+    "blocksMovement": false,
+    "light": { "radius": 96, "color": "#ff7a3d" },
+    "defaultTTLms": 120000
+  }
+}

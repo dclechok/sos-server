@@ -1,31 +1,20 @@
 // sockets/socket.js (OPEN WORLD MMO + GLOBAL CHAT) — ARPG CLICK/DRAG MOVE
-//
-// ✅ Position persistence:
-// - identify() reads x/y from currentLoc in MongoDB (falls back to defaults)
-// - Physics tick auto-saves position to MongoDB every SAVE_INTERVAL_MS (5s)
-// - On disconnect, position is saved immediately
-// - class-based sprites: identify() loads `class` from player_data
-//
-// ✅ Terrain collision:
-// - player:moveTo accepts ANY target including water — player walks toward it
-// - isPassable uses a fixed SHORE_INSET to allow standing on visual shore tiles
-// - No directional margin — works correctly in all directions including walking back
-// - Axis-separated sliding so player glides along shoreline
-//
 
 const { ObjectId } = require("mongodb");
 const { WORLD_SEED } = require("../world/worldSeed");
 const { getTileId } = require("../world/worldTiles");
 const { TILE, TERRAIN_ID } = require("../world/worldConstants");
 
+// ✅ IMPORT the chunk + TTL helpers you already wrote
+const { chunkKeyFromWorld, ttlMsForDefId } = require("../world/worldObjects");
+
 const activePlayers = {}; // socket.id -> characterId
 const playerMeta = {}; // socket.id -> { characterId, name, classId, role }
 
 // Authoritative state
-// socket.id -> { x, y, vx, vy, angle, facing, moveTarget, lastSeenAt }
 const shipState = {};
 
-// Last input per player (kept for compatibility; not used for ARPG click-move)
+// Last input per player
 const shipInput = {};
 
 // Position save throttle
@@ -67,10 +56,10 @@ function isPassable(worldX, worldY) {
 function canStandAt(worldX, worldY) {
   if (isPassable(worldX, worldY)) return true;
 
-  const insetN = isPassable(worldX,               worldY + SHORE_INSET);
-  const insetS = isPassable(worldX,               worldY - SHORE_INSET);
-  const insetE = isPassable(worldX - SHORE_INSET, worldY              );
-  const insetW = isPassable(worldX + SHORE_INSET, worldY              );
+  const insetN = isPassable(worldX, worldY + SHORE_INSET);
+  const insetS = isPassable(worldX, worldY - SHORE_INSET);
+  const insetE = isPassable(worldX - SHORE_INSET, worldY);
+  const insetW = isPassable(worldX + SHORE_INSET, worldY);
 
   return insetN || insetS || insetE || insetW;
 }
@@ -106,11 +95,11 @@ module.exports = function socketHandler(io) {
 
   const SNAPSHOT_HZ = 20;
 
-  const MAX_SPEED   = 45;
+  const MAX_SPEED = 45;
   const SLOW_RADIUS = 30;
-  const STOP_EPS    = 0.75;
+  const STOP_EPS = 0.75;
 
-  const VIEW_RADIUS    = 2400;
+  const VIEW_RADIUS = 2400;
   const VIEW_RADIUS_SQ = VIEW_RADIUS * VIEW_RADIUS;
 
   function clamp01(v) {
@@ -136,14 +125,20 @@ module.exports = function socketHandler(io) {
     for (const [id, p] of Object.entries(shipState)) {
       if (!p) continue;
 
-      const name    = playerMeta[id]?.name    || null;
+      const name = playerMeta[id]?.name || null;
       const classId = playerMeta[id]?.classId || null;
 
       if (id === meId) {
         players[id] = {
-          x: p.x, y: p.y, vx: p.vx, vy: p.vy,
-          angle: p.angle, facing: p.facing || "right",
-          name, class: classId, ts: now,
+          x: p.x,
+          y: p.y,
+          vx: p.vx,
+          vy: p.vy,
+          angle: p.angle,
+          facing: p.facing || "right",
+          name,
+          class: classId,
+          ts: now,
         };
         continue;
       }
@@ -152,9 +147,15 @@ module.exports = function socketHandler(io) {
       const dy = p.y - my;
       if (dx * dx + dy * dy <= VIEW_RADIUS_SQ) {
         players[id] = {
-          x: p.x, y: p.y, vx: p.vx, vy: p.vy,
-          angle: p.angle, facing: p.facing || "right",
-          name, class: classId, ts: now,
+          x: p.x,
+          y: p.y,
+          vx: p.vx,
+          vy: p.vy,
+          angle: p.angle,
+          facing: p.facing || "right",
+          name,
+          class: classId,
+          ts: now,
         };
       }
     }
@@ -179,8 +180,8 @@ module.exports = function socketHandler(io) {
         const tx = p.moveTarget.x;
         const ty = p.moveTarget.y;
 
-        const dx   = tx - p.x;
-        const dy   = ty - p.y;
+        const dx = tx - p.x;
+        const dy = ty - p.y;
         const dist = Math.hypot(dx, dy);
 
         const dirx = dist > 0 ? dx / dist : 0;
@@ -188,26 +189,30 @@ module.exports = function socketHandler(io) {
 
         if (dist <= STOP_EPS) {
           if (canStandAt(tx, ty)) {
-            p.x = tx; p.y = ty;
+            p.x = tx;
+            p.y = ty;
           }
-          p.vx = 0; p.vy = 0;
+          p.vx = 0;
+          p.vy = 0;
           p.moveTarget = null;
         } else {
           const slowFactor = clamp01(dist / SLOW_RADIUS);
-          const speed      = MAX_SPEED * slowFactor;
+          const speed = MAX_SPEED * slowFactor;
 
-          p.vx     = dirx * speed;
-          p.vy     = diry * speed;
+          p.vx = dirx * speed;
+          p.vy = diry * speed;
           p.facing = dx < 0 ? "left" : "right";
-          p.angle  = Math.atan2(dy, dx);
+          p.angle = Math.atan2(dy, dx);
 
           const step = speed * DT;
 
           if (step >= dist) {
             if (canStandAt(tx, ty)) {
-              p.x = tx; p.y = ty;
+              p.x = tx;
+              p.y = ty;
             }
-            p.vx = 0; p.vy = 0;
+            p.vx = 0;
+            p.vy = 0;
             p.moveTarget = null;
           } else {
             const newX = p.x + dirx * step;
@@ -221,7 +226,8 @@ module.exports = function socketHandler(io) {
             } else if (canStandAt(p.x, newY)) {
               p.y = newY;
             } else {
-              p.vx = 0; p.vy = 0;
+              p.vx = 0;
+              p.vy = 0;
               p.moveTarget = null;
             }
           }
@@ -231,7 +237,6 @@ module.exports = function socketHandler(io) {
         p.vy = 0;
       }
 
-      // Throttled position save
       const lastSave = lastSavedAt[id] || 0;
       if (now - lastSave >= SAVE_INTERVAL_MS) {
         lastSavedAt[id] = now;
@@ -270,19 +275,61 @@ module.exports = function socketHandler(io) {
     // CHAT
     // --------------------------------------------------
     socket.on("sendMessage", ({ message } = {}) => {
-      const now  = Date.now();
+      const now = Date.now();
       const prev = lastChatAt[socket.id] || 0;
       if (now - prev < CHAT_MIN_INTERVAL_MS) return;
       lastChatAt[socket.id] = now;
 
-      const cleanMsg = String(message ?? "").trim().slice(0, CHAT_MSG_MAX);
+      const cleanMsg = String(message ?? "")
+        .trim()
+        .slice(0, CHAT_MSG_MAX);
       if (!cleanMsg) return;
 
       const serverName = safeNameFromMeta(socket.id) || "Unknown";
-      const payload    = { user: serverName, message: cleanMsg, at: now };
+      const payload = { user: serverName, message: cleanMsg, at: now };
 
       pushChat(payload);
       io.emit("newMessage", payload);
+    });
+
+    // --------------------------------------------------
+    // SPAWN OBJECT (admin or system) — realtime
+    // --------------------------------------------------
+    socket.on("world:spawnObject", async ({ defId, x, y, state } = {}) => {
+      const meta = playerMeta[socket.id];
+
+      if (!meta?.role || !ADMIN_ROLES.has(meta.role)) return;
+
+      const tx = Number(x);
+      const ty = Number(y);
+      if (!defId || !Number.isFinite(tx) || !Number.isFinite(ty)) return;
+
+      try {
+        const db = require("../config/db").getDB();
+        const now = new Date();
+
+        const ttlMs = ttlMsForDefId(defId);
+
+        const doc = {
+          worldId: "main",
+          kind: "dynamic",
+          defId: String(defId),
+          x: tx,
+          y: ty,
+          chunkKey: chunkKeyFromWorld(tx, ty), // ✅ now defined
+          ownerId: meta.characterId || null,
+          state: state || {},
+          createdAt: now,
+          expiresAt: new Date(now.getTime() + ttlMs),
+        };
+
+        const result = await db.collection("world_objects").insertOne(doc);
+        const saved = { ...doc, _id: result.insertedId };
+
+        io.emit("obj:spawn", saved);
+      } catch (e) {
+        console.error("world:spawnObject failed:", e);
+      }
     });
 
     // --------------------------------------------------
@@ -322,18 +369,27 @@ module.exports = function socketHandler(io) {
         const y = Number(player?.currentLoc?.y ?? DEFAULT_Y);
 
         const nameRaw = String(player?.charName ?? "").trim();
-        const name    = nameRaw ? nameRaw.slice(0, CHAT_NAME_MAX) : null;
+        const name = nameRaw ? nameRaw.slice(0, CHAT_NAME_MAX) : null;
         const classId = String(player?.class ?? "").trim() || null;
 
-        // DB role is authoritative; fall back to client-sent role
-        const dbRole     = String(player?.role ?? "").trim() || null;
+        const dbRole = String(player?.role ?? "").trim() || null;
         const resolvedRole = dbRole || String(clientRole ?? "").trim() || null;
 
-        playerMeta[socket.id] = { characterId: String(characterId), name, classId, role: resolvedRole };
+        playerMeta[socket.id] = {
+          characterId: String(characterId),
+          name,
+          classId,
+          role: resolvedRole,
+        };
 
         shipState[socket.id] = {
-          x, y, vx: 0, vy: 0, angle: 0,
-          facing: "right", moveTarget: null,
+          x,
+          y,
+          vx: 0,
+          vy: 0,
+          angle: 0,
+          facing: "right",
+          moveTarget: null,
           lastSeenAt: Date.now(),
         };
 
@@ -357,7 +413,6 @@ module.exports = function socketHandler(io) {
 
     // --------------------------------------------------
     // MOVE TO
-    // ✅ Accepts any target — physics tick handles shore collision
     // --------------------------------------------------
     socket.on("player:moveTo", ({ x, y } = {}) => {
       if (!activePlayers[socket.id]) return;
@@ -368,8 +423,8 @@ module.exports = function socketHandler(io) {
       const ty = Number(y);
       if (!Number.isFinite(tx) || !Number.isFinite(ty)) return;
 
-      p.moveTarget  = { x: tx, y: ty };
-      p.lastSeenAt  = Date.now();
+      p.moveTarget = { x: tx, y: ty };
+      p.lastSeenAt = Date.now();
     });
 
     // --------------------------------------------------
@@ -425,7 +480,7 @@ module.exports = function socketHandler(io) {
       if (!shipState[socket.id]) return;
 
       const now = Date.now();
-      const ta  = Number(targetAngle);
+      const ta = Number(targetAngle);
 
       shipInput[socket.id] = {
         thrust: !!thrust,
