@@ -19,7 +19,7 @@ const { getTileId } = require("../world/worldTiles");
 const { TILE, TERRAIN_ID } = require("../world/worldConstants");
 
 const activePlayers = {}; // socket.id -> characterId
-const playerMeta = {}; // socket.id -> { characterId, name, classId }
+const playerMeta = {}; // socket.id -> { characterId, name, classId, role }
 
 // Authoritative state
 // socket.id -> { x, y, vx, vy, angle, facing, moveTarget, lastSeenAt }
@@ -54,25 +54,9 @@ const lastChatAt = {};
 // TERRAIN COLLISION
 // ------------------------------
 
-// TERRAIN_ID values from server/world/worldConstants.js:
-//   GRASS: 0, DEEP_OCEAN: 1, UNKNOWN: 255
 const BLOCKS_MOVEMENT = new Set([TERRAIN_ID.DEEP_OCEAN, TERRAIN_ID.UNKNOWN]);
-
-// How many world units into a blocked tile the player is allowed to stand.
-// TILE * 1 = player center can be up to 1 full tile into an ocean tile.
-// This lets them visually stand on the brown shore edge.
-// Tune this value: 0 = hard edge, TILE = one tile in, TILE*2 = two tiles in.
 const SHORE_INSET = TILE * 0.5;
 
-/**
- * Check if the player is allowed to stand at (worldX, worldY).
- * We check SHORE_INSET world units further in all four cardinal directions.
- * If ALL four probes are blocked, the player can't be there.
- * If ANY probe is passable, it means we're still near land — allow it.
- *
- * Actually simpler: just check the raw position but allow up to SHORE_INSET
- * into blocked tiles by shrinking the world coord toward the nearest tile center.
- */
 function isPassable(worldX, worldY) {
   const tileX = Math.floor(worldX / TILE);
   const tileY = Math.floor(worldY / TILE);
@@ -80,24 +64,13 @@ function isPassable(worldX, worldY) {
   return !BLOCKS_MOVEMENT.has(id);
 }
 
-/**
- * Returns true if the player CAN stand at (worldX, worldY).
- * Allows up to SHORE_INSET units into a blocked tile by checking
- * a point pulled back SHORE_INSET units toward the last passable position.
- *
- * Simple version: check (worldX, worldY) directly — if blocked,
- * check whether backing off by SHORE_INSET in X and Y independently
- * would be passable. If so, they're within the inset zone — allow it.
- */
 function canStandAt(worldX, worldY) {
   if (isPassable(worldX, worldY)) return true;
 
-  // We're on a blocked tile. Are we within SHORE_INSET of a passable tile?
-  // Check the four cardinal pull-back points.
-  const insetN = isPassable(worldX,              worldY + SHORE_INSET);
-  const insetS = isPassable(worldX,              worldY - SHORE_INSET);
-  const insetE = isPassable(worldX - SHORE_INSET, worldY             );
-  const insetW = isPassable(worldX + SHORE_INSET, worldY             );
+  const insetN = isPassable(worldX,               worldY + SHORE_INSET);
+  const insetS = isPassable(worldX,               worldY - SHORE_INSET);
+  const insetE = isPassable(worldX - SHORE_INSET, worldY              );
+  const insetW = isPassable(worldX + SHORE_INSET, worldY              );
 
   return insetN || insetS || insetE || insetW;
 }
@@ -121,6 +94,8 @@ async function savePosition(socketId) {
     console.error("position save error:", err);
   }
 }
+
+const ADMIN_ROLES = new Set(["admin", "owner"]);
 
 module.exports = function socketHandler(io) {
   // ======================================================
@@ -239,17 +214,13 @@ module.exports = function socketHandler(io) {
             const newY = p.y + diry * step;
 
             if (canStandAt(newX, newY)) {
-              // ✅ Free move
               p.x = newX;
               p.y = newY;
             } else if (canStandAt(newX, p.y)) {
-              // ✅ Slide along X
               p.x = newX;
             } else if (canStandAt(p.x, newY)) {
-              // ✅ Slide along Y
               p.y = newY;
             } else {
-              // ✅ Fully blocked
               p.vx = 0; p.vy = 0;
               p.moveTarget = null;
             }
@@ -317,7 +288,7 @@ module.exports = function socketHandler(io) {
     // --------------------------------------------------
     // IDENTIFY
     // --------------------------------------------------
-    socket.on("identify", async ({ characterId } = {}) => {
+    socket.on("identify", async ({ characterId, role: clientRole } = {}) => {
       if (!characterId) {
         socket.emit("sceneError", { error: "Missing characterId." });
         return;
@@ -337,7 +308,7 @@ module.exports = function socketHandler(io) {
         const db = require("../config/db").getDB();
         const player = await db.collection("player_data").findOne(
           { _id: oid },
-          { projection: { currentLoc: 1, charName: 1, class: 1 } }
+          { projection: { currentLoc: 1, charName: 1, class: 1, role: 1 } }
         );
 
         if (!player) {
@@ -354,7 +325,11 @@ module.exports = function socketHandler(io) {
         const name    = nameRaw ? nameRaw.slice(0, CHAT_NAME_MAX) : null;
         const classId = String(player?.class ?? "").trim() || null;
 
-        playerMeta[socket.id] = { characterId: String(characterId), name, classId };
+        // DB role is authoritative; fall back to client-sent role
+        const dbRole     = String(player?.role ?? "").trim() || null;
+        const resolvedRole = dbRole || String(clientRole ?? "").trim() || null;
+
+        playerMeta[socket.id] = { characterId: String(characterId), name, classId, role: resolvedRole };
 
         shipState[socket.id] = {
           x, y, vx: 0, vy: 0, angle: 0,
@@ -409,6 +384,37 @@ module.exports = function socketHandler(io) {
       p.vx = 0;
       p.vy = 0;
       p.lastSeenAt = Date.now();
+    });
+
+    // --------------------------------------------------
+    // ADMIN TELEPORT
+    // --------------------------------------------------
+    socket.on("teleport", ({ x, y } = {}) => {
+      const meta = playerMeta[socket.id];
+      console.log("teleport received:", { x, y, role: meta?.role, socketId: socket.id });
+
+      if (!meta?.role || !ADMIN_ROLES.has(meta.role)) {
+        console.log("teleport BLOCKED — role not in ADMIN_ROLES:", meta?.role);
+        return;
+      }
+
+      const p = shipState[socket.id];
+      if (!p) return;
+
+      const tx = Number(x);
+      const ty = Number(y);
+      if (!Number.isFinite(tx) || !Number.isFinite(ty)) return;
+
+      p.x = tx;
+      p.y = ty;
+      p.vx = 0;
+      p.vy = 0;
+      p.moveTarget = null;
+      p.lastSeenAt = Date.now();
+
+      console.log("teleport SUCCESS → snapped to:", { x: tx, y: ty });
+
+      socket.emit("teleported", { x: tx, y: ty });
     });
 
     // --------------------------------------------------
