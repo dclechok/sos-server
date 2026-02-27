@@ -11,8 +11,6 @@ const socketHandler = require("./sockets/socket");
 const path = require("path");
 const { startWorldTick } = require("./world/worldTick");
 const { startWorldObjectsCleanup } = require("./world/worldObjectsCleanup");
-
-// ✅ load item/object templates (JSON)
 const { loadGameData } = require("./gameData/gameDataLoader");
 
 const app = express();

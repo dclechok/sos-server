@@ -21,8 +21,8 @@
     "blocksMovement": true,
     "collision": {
       "shape": "circle",
-      "radius": 14,
-      "offset": { "x": 24, "y": 34 }
+      "radius": 4,
+      "offset": { "x": 0, "y": 15 }
     },
     "choppable": {
       "maxHP": 5
@@ -40,8 +40,8 @@
     "blocksMovement": true,
     "collision": {
       "shape": "circle",
-      "radius": 14,
-      "offset": { "x": 24, "y": 34 }
+      "radius": 4,
+      "offset": { "x": 0, "y": 15 }
     },
     "choppable": {
       "maxHP": 5
@@ -59,8 +59,8 @@
     "blocksMovement": true,
     "collision": {
       "shape": "circle",
-      "radius": 14,
-      "offset": { "x": 24, "y": 34 }
+      "radius": 4,
+      "offset": { "x": 0, "y": 15 }
     },
     "choppable": {
       "maxHP": 5
