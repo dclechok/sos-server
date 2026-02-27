@@ -12,5 +12,53 @@
     "blocksMovement": false,
     "light": { "radius": 96, "color": "#ff7a3d" },
     "defaultTTLms": 120000
+  },
+    "tree_basic": {
+    "name": "Forest Tree",
+    "sizePx": 128,
+    "frames": ["/art/objects/tree_basic.png"],
+    "fps": 0,
+    "blocksMovement": true,
+    "collision": {
+      "shape": "circle",
+      "radius": 14,
+      "offset": { "x": 24, "y": 34 }
+    },
+    "choppable": {
+      "maxHP": 5
+    },    
+    "defaultTTLms": 0
+  },
+      "tree_basic2": {
+    "name": "Forest Tree2",
+    "sizePx": 128,
+    "frames": ["/art/objects/tree_basic2.png"],
+    "fps": 0,
+    "blocksMovement": true,
+    "collision": {
+      "shape": "circle",
+      "radius": 14,
+      "offset": { "x": 24, "y": 34 }
+    },
+    "choppable": {
+      "maxHP": 5
+    },    
+    "defaultTTLms": 0
+  },
+        "tree_basic3": {
+    "name": "Forest Tree3",
+    "sizePx": 128,
+    "frames": ["/art/objects/tree_basic3.png"],
+    "fps": 0,
+    "blocksMovement": true,
+    "collision": {
+      "shape": "circle",
+      "radius": 14,
+      "offset": { "x": 24, "y": 34 }
+    },
+    "choppable": {
+      "maxHP": 5
+    },    
+    "defaultTTLms": 0
   }
 }

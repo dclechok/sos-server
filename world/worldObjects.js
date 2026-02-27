@@ -1,13 +1,7 @@
 // world/worldObjects.js
-
-// IMPORTANT:
-// Set CHUNK_TILES to match your existing world chunk system.
-// If your world chunks are 32x32 tiles and TILE=16px, then CHUNK_PX=512.
 const { TILE } = require("./worldConstants");
 
-// ✅ CHANGE THIS if your chunk size differs
 const CHUNK_TILES = 32;
-
 const CHUNK_PX = TILE * CHUNK_TILES;
 
 const TTL = {
@@ -33,8 +27,15 @@ function chunkKeysInRadius(cx, cy, r) {
 
 function ttlMsForDefId(defId) {
   const s = String(defId || "").toLowerCase();
+
   if (s.includes("campfire")) return TTL.CAMPFIRE_MS;
-  return TTL.DROP_MS;
+
+  if (s.includes("drop") || s.includes("loot") || s.includes("bag")) {
+    return TTL.DROP_MS;
+  }
+
+  // everything else (trees/rocks/deco) never decays by default
+  return 0;
 }
 
 module.exports = {

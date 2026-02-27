@@ -5,8 +5,12 @@ const { WORLD_SEED } = require("../world/worldSeed");
 const { getTileId } = require("../world/worldTiles");
 const { TILE, TERRAIN_ID } = require("../world/worldConstants");
 
-// ✅ IMPORT the chunk + TTL helpers you already wrote
-const { chunkKeyFromWorld, ttlMsForDefId } = require("../world/worldObjects");
+const {
+  chunkKeyFromWorld,
+  chunkKeysInRadius,
+  ttlMsForDefId,
+  CHUNK_PX,
+} = require("../world/worldObjects");
 
 const activePlayers = {}; // socket.id -> characterId
 const playerMeta = {}; // socket.id -> { characterId, name, classId, role }
@@ -85,6 +89,30 @@ async function savePosition(socketId) {
 }
 
 const ADMIN_ROLES = new Set(["admin", "owner"]);
+
+/**
+ * ✅ Decay rule:
+ * - decayTimeMs (or legacy defaultTTLms) <= 0 OR missing => never decays
+ * - decayTimeMs > 0 => expires after that many ms
+ *
+ * We allow the admin spawn payload to set it via `state.decayTimeMs`.
+ * Otherwise we fall back to ttlMsForDefId(defId).
+ */
+function resolveDecayTimeMs({ defId, state }) {
+  const raw = state?.decayTimeMs ?? state?.defaultTTLms;
+  const n = Number(raw);
+
+  // Explicitly provided:
+  if (Number.isFinite(n)) {
+    if (n <= 0) return 0;
+    return Math.floor(n);
+  }
+
+  // Fallback by defId:
+  const fallback = Number(ttlMsForDefId(defId));
+  if (!Number.isFinite(fallback) || fallback <= 0) return 0;
+  return Math.floor(fallback);
+}
 
 module.exports = function socketHandler(io) {
   // ======================================================
@@ -280,9 +308,7 @@ module.exports = function socketHandler(io) {
       if (now - prev < CHAT_MIN_INTERVAL_MS) return;
       lastChatAt[socket.id] = now;
 
-      const cleanMsg = String(message ?? "")
-        .trim()
-        .slice(0, CHAT_MSG_MAX);
+      const cleanMsg = String(message ?? "").trim().slice(0, CHAT_MSG_MAX);
       if (!cleanMsg) return;
 
       const serverName = safeNameFromMeta(socket.id) || "Unknown";
@@ -297,7 +323,6 @@ module.exports = function socketHandler(io) {
     // --------------------------------------------------
     socket.on("world:spawnObject", async ({ defId, x, y, state } = {}) => {
       const meta = playerMeta[socket.id];
-
       if (!meta?.role || !ADMIN_ROLES.has(meta.role)) return;
 
       const tx = Number(x);
@@ -308,7 +333,8 @@ module.exports = function socketHandler(io) {
         const db = require("../config/db").getDB();
         const now = new Date();
 
-        const ttlMs = ttlMsForDefId(defId);
+        // ✅ decayTimeMs rule (0/missing => immortal)
+        const decayTimeMs = resolveDecayTimeMs({ defId, state });
 
         const doc = {
           worldId: "main",
@@ -316,12 +342,20 @@ module.exports = function socketHandler(io) {
           defId: String(defId),
           x: tx,
           y: ty,
-          chunkKey: chunkKeyFromWorld(tx, ty), // ✅ now defined
+          chunkKey: chunkKeyFromWorld(tx, ty),
           ownerId: meta.characterId || null,
-          state: state || {},
+          state: {
+            ...(state || {}),
+            // normalize to new name
+            decayTimeMs,
+          },
           createdAt: now,
-          expiresAt: new Date(now.getTime() + ttlMs),
+          // expiresAt only set if decayTimeMs > 0
         };
+
+        if (decayTimeMs > 0) {
+          doc.expiresAt = new Date(now.getTime() + decayTimeMs);
+        }
 
         const result = await db.collection("world_objects").insertOne(doc);
         const saved = { ...doc, _id: result.insertedId };
@@ -329,6 +363,38 @@ module.exports = function socketHandler(io) {
         io.emit("obj:spawn", saved);
       } catch (e) {
         console.error("world:spawnObject failed:", e);
+      }
+    });
+
+    // --------------------------------------------------
+    // DELETE OBJECT (admin) — HARD DELETE by exact object id
+    // --------------------------------------------------
+    socket.on("world:deleteObject", async ({ id } = {}) => {
+      const meta = playerMeta[socket.id];
+      if (!meta?.role || !ADMIN_ROLES.has(meta.role)) return;
+
+      let oid;
+      try {
+        oid = new ObjectId(String(id));
+      } catch {
+        socket.emit("sceneError", { error: "Invalid object id." });
+        return;
+      }
+
+      try {
+        const db = require("../config/db").getDB();
+
+        const res = await db.collection("world_objects").deleteOne({ _id: oid });
+        if (!res?.deletedCount) {
+          socket.emit("sceneError", {
+            error: "Object not found (already deleted?).",
+          });
+          return;
+        }
+
+        io.emit("obj:delete", { id: String(oid) });
+      } catch (e) {
+        console.error("world:deleteObject failed:", e);
       }
     });
 
@@ -446,7 +512,12 @@ module.exports = function socketHandler(io) {
     // --------------------------------------------------
     socket.on("teleport", ({ x, y } = {}) => {
       const meta = playerMeta[socket.id];
-      console.log("teleport received:", { x, y, role: meta?.role, socketId: socket.id });
+      console.log("teleport received:", {
+        x,
+        y,
+        role: meta?.role,
+        socketId: socket.id,
+      });
 
       if (!meta?.role || !ADMIN_ROLES.has(meta.role)) {
         console.log("teleport BLOCKED — role not in ADMIN_ROLES:", meta?.role);
@@ -484,7 +555,9 @@ module.exports = function socketHandler(io) {
 
       shipInput[socket.id] = {
         thrust: !!thrust,
-        targetAngle: Number.isFinite(ta) ? ta : shipInput[socket.id]?.targetAngle,
+        targetAngle: Number.isFinite(ta)
+          ? ta
+          : shipInput[socket.id]?.targetAngle,
         lastAt: now,
       };
 
