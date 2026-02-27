@@ -29,8 +29,8 @@
     },    
     "defaultTTLms": 0,
     "anchorX": 0.5,
-    "anchorY": 1,
-    "depthOffsetY": 0
+    "anchorY": 0.5,
+    "depthOffsetY": -40
   },
       "tree_basic2": {
     "name": "Forest Tree2",
@@ -48,8 +48,8 @@
     },    
     "defaultTTLms": 0,
     "anchorX": 0.5,
-    "anchorY": 1,
-    "depthOffsetY": 0
+    "anchorY": 0.5,
+    "depthOffsetY": -40
   },
         "tree_basic3": {
     "name": "Forest Tree3",
@@ -67,7 +67,7 @@
     },    
     "defaultTTLms": 0,
     "anchorX": 0.5,
-    "anchorY": 1,
-    "depthOffsetY": 0
+    "anchorY": 0.5,
+    "depthOffsetY": -40
   }
 }
