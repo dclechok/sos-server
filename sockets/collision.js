@@ -1,5 +1,11 @@
 // server/sockets/collision.js
 // Manages solid object registry and all collision detection logic.
+//
+// Changes from original:
+// - resolveSlide() added: tries X-only and Y-only movement when direct path is blocked,
+//   allowing the player to slide smoothly around circle and rect obstacles.
+// - canMoveToXY still exported unchanged for legacy use.
+// - resolveSlide exported for use in playerState.js stepPlayer().
 
 const { getObjectDef } = require("../gameData/gameDataLoader");
 const { getTileId } = require("../world/worldTiles");
@@ -177,8 +183,54 @@ function canMoveToXY(wx, wy) {
   return canStandAt(wx, wy) && !collidesWithObject(wx, wy);
 }
 
+// ------------------------------------------------------
+// SLIDE RESOLUTION
+// ------------------------------------------------------
+// Instead of stopping dead when blocked, try moving along each axis
+// independently. This lets the player slide smoothly around circle
+// and rect obstacles rather than snagging on them.
+//
+// Returns the best position the player can actually reach this step.
+// Call this from stepPlayer() instead of the old if/else chain.
+//
+//   const { x, y } = resolveSlide(oldX, oldY, newX, newY);
+//   p.x = x; p.y = y;
+//
+function resolveSlide(fromX, fromY, toX, toY) {
+  // 1. Try the full move
+  if (canMoveToXY(toX, toY)) {
+    return { x: toX, y: toY, blocked: false };
+  }
+
+  // 2. Try X axis only (slide vertically along obstacle)
+  const xOnly = canMoveToXY(toX, fromY);
+
+  // 3. Try Y axis only (slide horizontally along obstacle)
+  const yOnly = canMoveToXY(fromX, toY);
+
+  if (xOnly && yOnly) {
+    // Both axes free — pick whichever moves us further toward the target.
+    // This handles the rare case where the diagonal is blocked by a corner.
+    const dxFull = toX - fromX;
+    const dyFull = toY - fromY;
+    // Prefer the axis with more movement (most natural slide)
+    if (Math.abs(dxFull) >= Math.abs(dyFull)) {
+      return { x: toX, y: fromY, blocked: false };
+    } else {
+      return { x: fromX, y: toY, blocked: false };
+    }
+  }
+
+  if (xOnly) return { x: toX, y: fromY, blocked: false };
+  if (yOnly) return { x: fromX, y: toY, blocked: false };
+
+  // 4. Fully blocked — stay put
+  return { x: fromX, y: fromY, blocked: true };
+}
+
 module.exports = {
   registerSolidObjectFromDoc,
   unregisterSolidObject,
   canMoveToXY,
+  resolveSlide,
 };

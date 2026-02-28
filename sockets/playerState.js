@@ -2,7 +2,7 @@
 // All per-player runtime state, physics stepping, snapshot building, and DB persistence.
 
 const { ObjectId } = require("mongodb");
-const { canMoveToXY } = require("./collision");
+const { canMoveToXY, resolveSlide } = require("./collision");
 
 // ------------------------------------------------------
 // STATE MAPS
@@ -55,33 +55,48 @@ function stepPlayer(p, dt) {
     const dist = Math.hypot(dx, dy);
 
     if (dist <= STOP_EPS) {
+      // Close enough — snap to target if passable, then stop
       if (canMoveToXY(tx, ty)) { p.x = tx; p.y = ty; }
       p.vx = 0; p.vy = 0; p.moveTarget = null;
-    } else {
-      const dirx       = dx / dist;
-      const diry       = dy / dist;
-      const slowFactor = clamp01(dist / SLOW_RADIUS);
-      const speed      = MAX_SPEED * slowFactor;
-      const step       = speed * dt;
-
-      p.vx     = dirx * speed;
-      p.vy     = diry * speed;
-      p.facing = dx < 0 ? "left" : "right";
-      p.angle  = Math.atan2(dy, dx);
-
-      if (step >= dist) {
-        if (canMoveToXY(tx, ty)) { p.x = tx; p.y = ty; }
-        p.vx = 0; p.vy = 0; p.moveTarget = null;
-      } else {
-        const newX = p.x + dirx * step;
-        const newY = p.y + diry * step;
-
-        if (canMoveToXY(newX, newY))      { p.x = newX; p.y = newY; }
-        else if (canMoveToXY(newX, p.y))  { p.x = newX; }
-        else if (canMoveToXY(p.x,  newY)) { p.y = newY; }
-        else { p.vx = 0; p.vy = 0; p.moveTarget = null; }
-      }
+      return;
     }
+
+    const dirx       = dx / dist;
+    const diry       = dy / dist;
+    const slowFactor = clamp01(dist / SLOW_RADIUS);
+    const speed      = MAX_SPEED * slowFactor;
+    const step       = Math.min(speed * dt, dist);
+
+    p.vx     = dirx * speed;
+    p.vy     = diry * speed;
+    p.facing = dx < 0 ? "left" : "right";
+    p.angle  = Math.atan2(dy, dx);
+
+    const newX = p.x + dirx * step;
+    const newY = p.y + diry * step;
+
+    // ── Slide resolution ──────────────────────────────────────────────────
+    // resolveSlide tries the full move, then X-only, then Y-only, then stops.
+    // This makes the player glide smoothly around circle and rect obstacles
+    // instead of snagging on them.
+    const resolved = resolveSlide(p.x, p.y, newX, newY);
+    p.x = resolved.x;
+    p.y = resolved.y;
+
+    if (resolved.blocked) {
+      // Fully blocked — kill velocity but keep moveTarget so the player
+      // keeps trying (lets them slide around a corner by holding the button)
+      p.vx = 0;
+      p.vy = 0;
+    }
+
+    // If we arrived close enough after sliding, clear the target
+    const remainDx = tx - p.x;
+    const remainDy = ty - p.y;
+    if (Math.hypot(remainDx, remainDy) <= STOP_EPS) {
+      p.vx = 0; p.vy = 0; p.moveTarget = null;
+    }
+
   } else {
     p.vx = 0;
     p.vy = 0;
