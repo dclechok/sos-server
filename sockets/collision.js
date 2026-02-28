@@ -1,20 +1,14 @@
 // server/sockets/collision.js
-// Manages solid object registry and all collision detection logic.
-//
-// Changes from original:
-// - resolveSlide() added: tries X-only and Y-only movement when direct path is blocked,
-//   allowing the player to slide smoothly around circle and rect obstacles.
-// - canMoveToXY still exported unchanged for legacy use.
-// - resolveSlide exported for use in playerState.js stepPlayer().
 
 const { getObjectDef } = require("../gameData/gameDataLoader");
 const { getTileId } = require("../world/worldTiles");
 const { TILE, TERRAIN_ID } = require("../world/worldConstants");
 
 const COLLISION_DEBUG = process.env.COLLISION_DEBUG === "1";
+
+// IMPORTANT: These units must match your world coordinates (same units as player x/y)
 const PLAYER_RADIUS = 5;
 
-// _id string → { x, y, defId, def }
 const solidObjects = new Map();
 
 // ------------------------------------------------------
@@ -22,7 +16,6 @@ const solidObjects = new Map();
 // ------------------------------------------------------
 function registerSolidObjectFromDoc(doc) {
   if (!doc?._id) return;
-
   const defId = String(doc.defId || "");
   const def = getObjectDef(defId);
   if (!def?.blocksMovement) return;
@@ -75,7 +68,7 @@ async function loadSolidObjectsWithRetry(tries = 30, delayMs = 500) {
 
       if (missingDefs > 0) {
         console.log(
-          `[collision] NOTE: ${missingDefs}/${objs.length} objects have defId missing from objects.json (they will never block).`
+          `[collision] NOTE: ${missingDefs}/${objs.length} objects have defId missing from objects.json`
         );
       }
 
@@ -94,7 +87,6 @@ async function loadSolidObjectsWithRetry(tries = 30, delayMs = 500) {
   );
 }
 
-// Kick off async load once DB is connected
 loadSolidObjectsWithRetry();
 
 // ------------------------------------------------------
@@ -123,22 +115,20 @@ function canStandAt(worldX, worldY) {
 // ------------------------------------------------------
 // OBJECT COLLISION
 // ------------------------------------------------------
-function collidesWithObject(wx, wy, radius = PLAYER_RADIUS) {
-  if (solidObjects.size === 0) {
-    if (COLLISION_DEBUG) console.log("[collision] solidObjects is EMPTY");
-    return false;
-  }
+function collidesWithObject(wx, wy, radius) {
+  radius = radius ?? PLAYER_RADIUS;
 
   for (const [id, obj] of solidObjects) {
     const def = obj.def;
     const col = def?.collision;
 
+    // Fallback: AABB based on sizePx
     if (!col) {
       const half = (def?.sizePx ?? 16) * 0.5;
-      const hit =
+      if (
         Math.abs(wx - obj.x) < half + radius &&
-        Math.abs(wy - obj.y) < half + radius;
-      if (hit) {
+        Math.abs(wy - obj.y) < half + radius
+      ) {
         if (COLLISION_DEBUG)
           console.log(`[collision] HIT(fallback AABB) _id=${id} defId=${obj.defId}`);
         return true;
@@ -146,11 +136,11 @@ function collidesWithObject(wx, wy, radius = PLAYER_RADIUS) {
       continue;
     }
 
+    // Circle collision
     if (col.shape === "circle") {
       const cx = obj.x + (col.offset?.x ?? 0);
       const cy = obj.y + (col.offset?.y ?? 0);
-      const hit = Math.hypot(wx - cx, wy - cy) < (col.radius ?? 0) + radius;
-      if (hit) {
+      if (Math.hypot(wx - cx, wy - cy) < (col.radius ?? 0) + radius) {
         if (COLLISION_DEBUG)
           console.log(`[collision] HIT(circle) _id=${id} defId=${obj.defId}`);
         return true;
@@ -158,22 +148,23 @@ function collidesWithObject(wx, wy, radius = PLAYER_RADIUS) {
       continue;
     }
 
+    // Rect collision (axis-aligned)
     if (col.shape === "rect") {
       const ox = obj.x + (col.offset?.x ?? 0);
       const oy = obj.y + (col.offset?.y ?? 0);
       const hw = (col.w ?? def?.sizePx ?? 16) * 0.5;
       const hh = (col.h ?? def?.sizePx ?? 16) * 0.5;
-      const hit = Math.abs(wx - ox) < hw + radius && Math.abs(wy - oy) < hh + radius;
-      if (hit) {
+
+      if (
+        Math.abs(wx - ox) < hw + radius &&
+        Math.abs(wy - oy) < hh + radius
+      ) {
         if (COLLISION_DEBUG)
           console.log(`[collision] HIT(rect) _id=${id} defId=${obj.defId}`);
         return true;
       }
       continue;
     }
-
-    if (COLLISION_DEBUG)
-      console.log(`[collision] unknown shape "${col.shape}" for defId=${obj.defId}`);
   }
 
   return false;
@@ -183,54 +174,8 @@ function canMoveToXY(wx, wy) {
   return canStandAt(wx, wy) && !collidesWithObject(wx, wy);
 }
 
-// ------------------------------------------------------
-// SLIDE RESOLUTION
-// ------------------------------------------------------
-// Instead of stopping dead when blocked, try moving along each axis
-// independently. This lets the player slide smoothly around circle
-// and rect obstacles rather than snagging on them.
-//
-// Returns the best position the player can actually reach this step.
-// Call this from stepPlayer() instead of the old if/else chain.
-//
-//   const { x, y } = resolveSlide(oldX, oldY, newX, newY);
-//   p.x = x; p.y = y;
-//
-function resolveSlide(fromX, fromY, toX, toY) {
-  // 1. Try the full move
-  if (canMoveToXY(toX, toY)) {
-    return { x: toX, y: toY, blocked: false };
-  }
-
-  // 2. Try X axis only (slide vertically along obstacle)
-  const xOnly = canMoveToXY(toX, fromY);
-
-  // 3. Try Y axis only (slide horizontally along obstacle)
-  const yOnly = canMoveToXY(fromX, toY);
-
-  if (xOnly && yOnly) {
-    // Both axes free — pick whichever moves us further toward the target.
-    // This handles the rare case where the diagonal is blocked by a corner.
-    const dxFull = toX - fromX;
-    const dyFull = toY - fromY;
-    // Prefer the axis with more movement (most natural slide)
-    if (Math.abs(dxFull) >= Math.abs(dyFull)) {
-      return { x: toX, y: fromY, blocked: false };
-    } else {
-      return { x: fromX, y: toY, blocked: false };
-    }
-  }
-
-  if (xOnly) return { x: toX, y: fromY, blocked: false };
-  if (yOnly) return { x: fromX, y: toY, blocked: false };
-
-  // 4. Fully blocked — stay put
-  return { x: fromX, y: fromY, blocked: true };
-}
-
 module.exports = {
   registerSolidObjectFromDoc,
   unregisterSolidObject,
   canMoveToXY,
-  resolveSlide,
 };
