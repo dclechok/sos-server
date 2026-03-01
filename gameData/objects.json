@@ -22,7 +22,7 @@
     "collision": {
       "shape": "circle",
       "radius": 4,
-      "offset": { "x": 0, "y": 15 }
+      "offset": { "x": 0, "y": 18 }
     },
     "choppable": {
       "maxHP": 5
