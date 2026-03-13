@@ -1,5 +1,6 @@
 const { ObjectId } = require("mongodb");
 const { getClassById } = require("../gameData/classDefs");
+const { computeCharacterStats } = require("../world/computeStats");
 
 // STARTING LOCATION !!!
 const DEFAULT_X = 11686;
@@ -27,6 +28,17 @@ function makeNewCharacterDoc({ email, charName, classId, startingStats }) {
     charName,
     exp: 1,
     class: classId,
+  };
+}
+
+function attachComputedStats(character) {
+  if (!character) return character;
+
+  const { derivedStats } = computeCharacterStats(character);
+
+  return {
+    ...character,
+    derivedStats,
   };
 }
 
@@ -102,7 +114,9 @@ exports.getCharactersForAccount = async (req, res) => {
       );
     }
 
-    return res.json({ characters: resolvedChars });
+    const charactersWithStats = resolvedChars.map(attachComputedStats);
+
+    return res.json({ characters: charactersWithStats });
   } catch (err) {
     console.error("Character fetch error:", err);
     return res.status(500).json({ message: "Server error" });
@@ -196,7 +210,8 @@ exports.createCharacterForAccount = async (req, res) => {
     );
 
     const created = await charsCol.findOne({ _id: ins.insertedId });
-    return res.json({ character: created });
+
+    return res.json({ character: attachComputedStats(created) });
   } catch (err) {
     console.error("Character create error:", err);
     return res.status(500).json({ message: "Server error" });
