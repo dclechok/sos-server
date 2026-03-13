@@ -1,11 +1,9 @@
-// controllers/characterController.js
 const { ObjectId } = require("mongodb");
-
+const { getClassById } = require("../gameData/classDefs");
 
 // STARTING LOCATION !!!
 const DEFAULT_X = 11686;
 const DEFAULT_Y = 13578;
-
 
 function safeName(raw) {
   return String(raw || "")
@@ -15,7 +13,7 @@ function safeName(raw) {
     .slice(0, 16);
 }
 
-function makeNewCharacterDoc({ email, charName, classId }) {
+function makeNewCharacterDoc({ email, charName, classId, startingStats }) {
   return {
     email: email || null,
     dateCreated: new Date(),
@@ -24,8 +22,8 @@ function makeNewCharacterDoc({ email, charName, classId }) {
     currency: "1",
     inventory: [],
     equipped: [],
-    stat: {},
-    skill: {},
+    stats: { ...startingStats },
+    skills: {},
     charName,
     exp: 1,
     class: classId,
@@ -46,7 +44,9 @@ function cleanIds(arr) {
 exports.getCharactersForAccount = async (req, res) => {
   try {
     const accountId = req.params.id;
-    if (!ObjectId.isValid(accountId)) return res.json({ characters: [] });
+    if (!ObjectId.isValid(accountId)) {
+      return res.json({ characters: [] });
+    }
 
     const db = req.app.locals.db;
     const usersCol = db.collection("accounts");
@@ -56,7 +56,10 @@ exports.getCharactersForAccount = async (req, res) => {
       { _id: new ObjectId(accountId) },
       { projection: { passwordHash: 0 } }
     );
-    if (!user) return res.json({ characters: [] });
+
+    if (!user) {
+      return res.json({ characters: [] });
+    }
 
     // Ownership check
     const authedId = req.user?.id || req.user?._id;
@@ -91,6 +94,7 @@ exports.getCharactersForAccount = async (req, res) => {
     const repairedIds = resolvedChars.map((c) => String(c._id));
     const currentStored = JSON.stringify(user.characters || []);
     const repaired = JSON.stringify(repairedIds);
+
     if (currentStored !== repaired) {
       await usersCol.updateOne(
         { _id: new ObjectId(accountId) },
@@ -113,6 +117,7 @@ exports.getCharactersForAccount = async (req, res) => {
 exports.createCharacterForAccount = async (req, res) => {
   try {
     const accountId = req.params.id;
+
     if (!ObjectId.isValid(accountId)) {
       return res.status(400).json({ message: "Invalid account id" });
     }
@@ -122,7 +127,9 @@ exports.createCharacterForAccount = async (req, res) => {
     const charsCol = db.collection("player_data");
 
     const user = await usersCol.findOne({ _id: new ObjectId(accountId) });
-    if (!user) return res.status(404).json({ message: "Account not found" });
+    if (!user) {
+      return res.status(404).json({ message: "Account not found" });
+    }
 
     // Ownership check
     const authedId = req.user?.id || req.user?._id;
@@ -134,11 +141,21 @@ exports.createCharacterForAccount = async (req, res) => {
     const classId = String(req.body?.class || req.body?.classId || "").trim();
 
     if (!charName || charName.length < 3) {
-      return res.status(400).json({ message: "charName must be at least 3 characters" });
+      return res
+        .status(400)
+        .json({ message: "charName must be at least 3 characters" });
     }
+
     if (!classId) {
       return res.status(400).json({ message: "class is required" });
     }
+
+    const classDef = getClassById(classId);
+    if (!classDef) {
+      return res.status(400).json({ message: "Invalid class" });
+    }
+
+    const startingStats = classDef.stats || {};
 
     // Slot cap counts only real valid IDs — never empty strings
     const MAX_SLOTS = 6;
@@ -154,12 +171,21 @@ exports.createCharacterForAccount = async (req, res) => {
         _id: { $in: existingValidIds.map((id) => new ObjectId(id)) },
         charName: new RegExp(`^${charName}$`, "i"),
       });
+
       if (dup) {
-        return res.status(409).json({ message: "That name is already used on this account." });
+        return res
+          .status(409)
+          .json({ message: "That name is already used on this account." });
       }
     }
 
-    const doc = makeNewCharacterDoc({ email: user.email, charName, classId });
+    const doc = makeNewCharacterDoc({
+      email: user.email,
+      charName,
+      classId: classDef.id,
+      startingStats,
+    });
+
     const ins = await charsCol.insertOne(doc);
     const newId = String(ins.insertedId);
 
@@ -195,7 +221,9 @@ exports.deleteCharacterForAccount = async (req, res) => {
     const charsCol = db.collection("player_data");
 
     const user = await usersCol.findOne({ _id: new ObjectId(accountId) });
-    if (!user) return res.status(404).json({ message: "Account not found" });
+    if (!user) {
+      return res.status(404).json({ message: "Account not found" });
+    }
 
     // Ownership check
     const authedId = req.user?.id || req.user?._id;
@@ -204,6 +232,7 @@ exports.deleteCharacterForAccount = async (req, res) => {
     }
 
     const validIds = cleanIds(user.characters);
+
     if (!validIds.includes(String(charId))) {
       return res.status(404).json({ message: "Character not on this account" });
     }
