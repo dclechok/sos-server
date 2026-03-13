@@ -13,7 +13,7 @@
     "light": { "radius": 96, "color": "#ff7a3d" },
     "defaultTTLms": 120000
   },
-    "tree_basic": {
+  "tree_basic": {
     "name": "Forest Tree",
     "sizePx": 128,
     "frames": ["/art/objects/tree_basic.png"],
@@ -26,13 +26,14 @@
     },
     "choppable": {
       "maxHP": 5
-    },    
+    },
     "defaultTTLms": 0,
     "anchorX": 0.5,
     "anchorY": 0.5,
-    "depthOffsetY": -40
+    "depthOffsetY": -40,
+    "occludesPlayer": true
   },
-      "tree_basic2": {
+  "tree_basic2": {
     "name": "Forest Tree2",
     "sizePx": 128,
     "frames": ["/art/objects/tree_basic2.png"],
@@ -45,13 +46,14 @@
     },
     "choppable": {
       "maxHP": 5
-    },    
+    },
     "defaultTTLms": 0,
     "anchorX": 0.5,
     "anchorY": 0.5,
-    "depthOffsetY": -40
+    "depthOffsetY": -40,
+    "occludesPlayer": true
   },
-        "tree_basic3": {
+  "tree_basic3": {
     "name": "Forest Tree3",
     "sizePx": 128,
     "frames": ["/art/objects/tree_basic3.png"],
@@ -64,10 +66,11 @@
     },
     "choppable": {
       "maxHP": 5
-    },    
+    },
     "defaultTTLms": 0,
     "anchorX": 0.5,
     "anchorY": 0.5,
-    "depthOffsetY": -40
+    "depthOffsetY": -40,
+    "occludesPlayer": true
   }
 }
