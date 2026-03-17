@@ -6,6 +6,15 @@ const { computeCharacterStats } = require("../world/computeStats");
 const DEFAULT_X = 11686;
 const DEFAULT_Y = 13578;
 
+const DEFAULT_APPEARANCE = {
+  skinToneId: "light_neutral_1",
+  eyeColor: "#3b271b",
+  hairStyle: "none",
+  hairColor: "#2b1d16",
+  beardStyle: "none",
+  beardColor: "#2b1d16",
+};
+
 function safeName(raw) {
   return String(raw || "")
     .replace(/[^a-zA-Z0-9 _'-]/g, "")
@@ -14,7 +23,56 @@ function safeName(raw) {
     .slice(0, 16);
 }
 
-function makeNewCharacterDoc({ email, charName, classId, startingStats }) {
+function safeHexColor(raw, fallback) {
+  const s = String(raw || "").trim().toLowerCase();
+  return /^#[0-9a-f]{6}$/.test(s) ? s : fallback;
+}
+
+function safeEnum(raw, allowed, fallback) {
+  const s = String(raw || "").trim();
+  return allowed.has(s) ? s : fallback;
+}
+
+function sanitizeAppearance(raw) {
+  const src = raw && typeof raw === "object" ? raw : {};
+
+  const allowedSkinToneIds = new Set([
+    "fair_cool_1",
+    "fair_warm_1",
+    "light_neutral_1",
+    "light_warm_2",
+    "medium_neutral_1",
+    "tan_warm_1",
+    "brown_neutral_1",
+    "deep_brown_1",
+    "deep_brown_2",
+  ]);
+
+  return {
+    skinToneId: safeEnum(
+      src.skinToneId,
+      allowedSkinToneIds,
+      DEFAULT_APPEARANCE.skinToneId
+    ),
+    eyeColor: safeHexColor(src.eyeColor, DEFAULT_APPEARANCE.eyeColor),
+    hairStyle: String(src.hairStyle || DEFAULT_APPEARANCE.hairStyle)
+      .trim()
+      .slice(0, 32) || DEFAULT_APPEARANCE.hairStyle,
+    hairColor: safeHexColor(src.hairColor, DEFAULT_APPEARANCE.hairColor),
+    beardStyle: String(src.beardStyle || DEFAULT_APPEARANCE.beardStyle)
+      .trim()
+      .slice(0, 32) || DEFAULT_APPEARANCE.beardStyle,
+    beardColor: safeHexColor(src.beardColor, DEFAULT_APPEARANCE.beardColor),
+  };
+}
+
+function makeNewCharacterDoc({
+  email,
+  charName,
+  classId,
+  startingStats,
+  appearance,
+}) {
   return {
     email: email || null,
     dateCreated: new Date(),
@@ -28,6 +86,7 @@ function makeNewCharacterDoc({ email, charName, classId, startingStats }) {
     charName,
     exp: 1,
     class: classId,
+    appearance: sanitizeAppearance(appearance),
   };
 }
 
@@ -38,6 +97,7 @@ function attachComputedStats(character) {
 
   return {
     ...character,
+    appearance: sanitizeAppearance(character.appearance),
     derivedStats,
   };
 }
@@ -79,7 +139,6 @@ exports.getCharactersForAccount = async (req, res) => {
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    // Filter out empty strings and garbage before doing anything
     const validIds = cleanIds(user.characters);
 
     let resolvedChars = [];
@@ -125,7 +184,7 @@ exports.getCharactersForAccount = async (req, res) => {
 
 /**
  * POST /api/characters/:id
- * Body: { charName, class | classId }
+ * Body: { charName, class | classId, appearance }
  * Returns { character }
  */
 exports.createCharacterForAccount = async (req, res) => {
@@ -153,6 +212,7 @@ exports.createCharacterForAccount = async (req, res) => {
 
     const charName = safeName(req.body?.charName);
     const classId = String(req.body?.class || req.body?.classId || "").trim();
+    const appearance = sanitizeAppearance(req.body?.appearance);
 
     if (!charName || charName.length < 3) {
       return res
@@ -171,7 +231,6 @@ exports.createCharacterForAccount = async (req, res) => {
 
     const startingStats = classDef.stats || {};
 
-    // Slot cap counts only real valid IDs — never empty strings
     const MAX_SLOTS = 6;
     const existingValidIds = cleanIds(user.characters);
 
@@ -179,7 +238,6 @@ exports.createCharacterForAccount = async (req, res) => {
       return res.status(400).json({ message: "Character slots full." });
     }
 
-    // Duplicate name check
     if (existingValidIds.length > 0) {
       const dup = await charsCol.findOne({
         _id: { $in: existingValidIds.map((id) => new ObjectId(id)) },
@@ -198,12 +256,12 @@ exports.createCharacterForAccount = async (req, res) => {
       charName,
       classId: classDef.id,
       startingStats,
+      appearance,
     });
 
     const ins = await charsCol.insertOne(doc);
     const newId = String(ins.insertedId);
 
-    // Write back only clean IDs — this also repairs any pre-existing garbage
     await usersCol.updateOne(
       { _id: new ObjectId(accountId) },
       { $set: { characters: [...existingValidIds, newId] } }
@@ -252,7 +310,6 @@ exports.deleteCharacterForAccount = async (req, res) => {
       return res.status(404).json({ message: "Character not on this account" });
     }
 
-    // Write back clean array minus the deleted one
     await usersCol.updateOne(
       { _id: new ObjectId(accountId) },
       { $set: { characters: validIds.filter((id) => id !== String(charId)) } }
